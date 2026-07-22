@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, mock } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { handoffWorkflowRuntime, takeWorkflowRuntime } from "../src/extension-reload.js";
+import { discardWorkflowRuntime, handoffWorkflowRuntime, takeWorkflowRuntime } from "../src/extension-reload.js";
 import { buildArmedWorkflowPrompt, WORKFLOW_TOOL_NAME, type WorkflowModeState } from "../src/workflow-editor.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
@@ -417,6 +417,62 @@ describe("workflow extension - control tool availability", () => {
         const restaged = takeWorkflowRuntime(process.cwd());
         assert.equal(restaged?.manager, staged.manager, "a compatible generation keeps the exact live manager");
         assert.equal(restaged?.effort.level, "high", "session effort survives with the compatible runtime");
+      });
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("discards the runtime on a non-reload shutdown so nothing is left to claim", async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-control-extension-discard-"));
+    try {
+      await withFakeHomeAsync(fakeHome, async () => {
+        discardWorkflowRuntime(process.cwd());
+
+        const activeTools = ["bash", "read"];
+        const handlers: Record<string, Array<(...args: any[]) => any>> = {};
+        const pi = {
+          registerTool: () => {},
+          registerCommand: () => {},
+          getCommands: () => [],
+          on: (event: string, handler: (...args: any[]) => any) => {
+            if (!handlers[event]) handlers[event] = [];
+            handlers[event].push(handler);
+          },
+          getActiveTools: () => [...activeTools],
+          setActiveTools: (tools: string[]) => {
+            activeTools.splice(0, activeTools.length, ...tools);
+          },
+          sendMessage: () => {},
+        } as unknown as ExtensionAPI;
+        const { default: installExtension } = await import("../extensions/workflow.js");
+
+        installExtension(pi);
+        handlers.session_start[0](
+          {},
+          {
+            model: undefined,
+            modelRegistry: {},
+            sessionManager: { getSessionId: () => "session-1" },
+            ui: { setWidget: () => {} },
+          },
+        );
+
+        // No reason at all, and an explicit non-"reload" reason: neither may
+        // stage a handoff for the next extension generation to claim.
+        handlers.session_shutdown?.[0]?.();
+        assert.equal(
+          takeWorkflowRuntime(process.cwd()),
+          undefined,
+          "session_shutdown with no reason must not stage a handoff",
+        );
+
+        handlers.session_shutdown?.[0]?.({ reason: "manual" });
+        assert.equal(
+          takeWorkflowRuntime(process.cwd()),
+          undefined,
+          "session_shutdown(reason !== 'reload') must not stage a handoff",
+        );
       });
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });

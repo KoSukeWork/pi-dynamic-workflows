@@ -3,7 +3,7 @@ import {
   claimWorkflowRuntime,
   discardWorkflowRuntime,
   handoffWorkflowRuntime,
-  pauseVersionMismatchWorkflowRuntime,
+  pauseStrandedWorkflowRuntime,
   WORKFLOW_EXTENSION_VERSION,
   type WorkflowReloadRuntime,
 } from "../src/extension-reload.js";
@@ -56,7 +56,7 @@ export default function extension(pi: ExtensionAPI) {
   const runtimeClaim = claimWorkflowRuntime(cwd);
   const previousRuntime = runtimeClaim.compatible;
   const pausedForVersionChange = runtimeClaim.versionMismatch
-    ? pauseVersionMismatchWorkflowRuntime(runtimeClaim.versionMismatch)
+    ? pauseStrandedWorkflowRuntime(runtimeClaim.versionMismatch)
     : 0;
   const manager = previousRuntime?.manager ?? new WorkflowManager({ cwd, ...managerOptions });
   if (previousRuntime) manager.reconfigureAfterReload(managerOptions);

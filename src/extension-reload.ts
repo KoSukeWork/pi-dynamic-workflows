@@ -40,8 +40,13 @@ function handoffs(): Map<string, HandoffEntry> {
   return created;
 }
 
-/** Stage a live runtime immediately before Pi tears down the old extension runner. */
-export function handoffWorkflowRuntime(runtime: WorkflowReloadRuntime): void {
+/**
+ * Stage a live runtime immediately before Pi tears down the old extension runner.
+ *
+ * `ttlMs` is only ever overridden by tests; production callers rely on the
+ * default so a slow/failed reload doesn't strand a staged runtime forever.
+ */
+export function handoffWorkflowRuntime(runtime: WorkflowReloadRuntime, ttlMs: number = RELOAD_HANDOFF_TTL_MS): void {
   const store = handoffs();
   const previous = store.get(runtime.cwd);
   if (previous) clearTimeout(previous.timer);
@@ -49,8 +54,14 @@ export function handoffWorkflowRuntime(runtime: WorkflowReloadRuntime): void {
   const entry = {} as HandoffEntry;
   entry.runtime = runtime;
   entry.timer = setTimeout(() => {
-    if (store.get(runtime.cwd) === entry) store.delete(runtime.cwd);
-  }, RELOAD_HANDOFF_TTL_MS);
+    if (store.get(runtime.cwd) !== entry) return;
+    // No new extension generation ever claimed this runtime. Anything still
+    // "running" in it would otherwise burn tokens to completion and deliver
+    // its result into a manager nobody can reach anymore, so pause it onto
+    // the same journal-recovery path a version-mismatch reload uses.
+    pauseStrandedWorkflowRuntime(runtime);
+    store.delete(runtime.cwd);
+  }, ttlMs);
   entry.timer.unref?.();
   store.set(runtime.cwd, entry);
 }
@@ -79,10 +90,11 @@ export function claimWorkflowRuntime(cwd: string): WorkflowRuntimeClaim {
 }
 
 /**
- * Move live runs from a replaced extension version onto the existing journal
- * recovery path before the fresh manager is constructed.
+ * Move a runtime's live runs onto the existing journal recovery path when no
+ * compatible manager will carry them forward — a replaced extension version,
+ * or a staged handoff that expired unclaimed.
  */
-export function pauseVersionMismatchWorkflowRuntime(runtime: WorkflowReloadRuntime): number {
+export function pauseStrandedWorkflowRuntime(runtime: WorkflowReloadRuntime): number {
   let paused = 0;
   for (const run of runtime.manager.listRuns()) {
     if (run.status === "running" && runtime.manager.pause(run.runId)) paused++;
