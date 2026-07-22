@@ -27,7 +27,7 @@ Review author-visible behavior, not formatting preferences. When behavior depend
 ## Lifecycle
 
 - Are runtime retries and semantic retries separately bounded?
-- Are loops, agents, concurrency, timeout, and token spend bounded appropriately?
+- Are loops, agents, concurrency, and timeout bounded appropriately, with a token budget only if the user asked for one?
 - Are budget claims honest about soft gates and in-flight overshoot?
 - Are checkpoints limited to implemented confirmation/headless behavior?
 - Does nesting stay one level and account for shared limits/store?
