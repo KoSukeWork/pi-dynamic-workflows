@@ -187,15 +187,17 @@ test("createWorkflowTool schema describes the configured or unbounded timeout", 
   assert.match(description, /only when the user asks/i);
 });
 
-test("createWorkflowTool schema describes the configured or unlimited token budget", () => {
+test("createWorkflowTool schema makes token budgets explicit opt-in spend gates", () => {
   const tool = createWorkflowTool();
   const description = parameterDescription(tool, "tokenBudget");
 
-  assert.match(description, /soft pre-call token gate/i);
-  assert.match(description, /concurrent in-flight work can overshoot/i);
-  assert.match(description, /Omit to use configured `defaultTokenBudget`/i);
+  assert.match(description, /opt-in soft spend gate, not a planning target/i);
+  assert.match(description, /never invent or infer `tokenBudget`/i);
+  assert.match(description, /set it only when the user supplies or requests a cap/i);
+  assert.match(description, /configured `defaultTokenBudget`/i);
   assert.match(description, /without one.*unlimited/i);
-  assert.match(description, /only when the user asks/i);
+  assert.match(description, /exhaustion blocks later calls/i);
+  assert.match(description, /in-flight work can overshoot/i);
 });
 
 test("createWorkflowTool schema exposes resource controls and large-fan-out authority", () => {

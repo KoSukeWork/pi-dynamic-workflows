@@ -57,6 +57,6 @@ A separate protected check ran the six core scenarios three times on GPT-5.4 Min
 
 The optional harness is available through `npm run comprehension -- --suite coverage --model <provider/model:thinking> --output <path>`. It records the selected and resolved model, thinking level, skill-loading evidence, generated workflow, runtime evidence, assertions, and token usage.
 
-The delivery-choice harness has a deterministic scorer and optional provider CLI for default background delivery versus `background:false` inline delivery. This report includes no provider-run delivery-choice result.
+The delivery-choice harness has a deterministic scorer and optional provider CLI for background versus inline delivery and token-budget intent. It expects ordinary requests to omit `tokenBudget` and preserves an explicit user cap exactly. A final-candidate run with `openai-codex/gpt-5.6-sol:high` passed 3/3 scenarios: the model omitted `tokenBudget` for both ordinary requests and preserved the explicit `200000` cap.
 
 Raw provider evidence remains local and uncommitted because it is large and variable. The committed release gate verifies the harness, parser/runtime replay seam, package discovery, coverage manifest, generated references, context measurements, and all model-free examples without making provider calls.

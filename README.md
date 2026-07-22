@@ -310,9 +310,10 @@ The comprehension harness is manual and never runs in normal CI, `npm test`, or 
 npm run comprehension -- --model provider/model                    # quick writing scenario
 npm run comprehension -- --model provider/model --suite full       # write, edit, review, and debug
 npm run comprehension -- --model provider/model --output runs/a.json
+npm run delivery-choice -- --model provider/model                  # timing and token-budget choices
 ```
 
-By default, evidence is written under ignored `.pi/model-comprehension/`. Each JSON run records the exact prompts and versions, generated workflows, skill reads, provider token usage, deterministic runtime calls/topology/results, assertions, and failure details. Scenario failures are retained as non-blocking evidence and do not produce a failing exit status; argument, model-selection, and setup errors do.
+By default, evidence is written under ignored `.pi/model-comprehension/`. Each JSON run records the exact prompts and versions, generated workflows, skill reads, provider token usage, deterministic runtime calls/topology/results, assertions, and failure details. The delivery-choice harness also checks that ordinary requests omit `tokenBudget` and explicit user caps are preserved exactly. Scenario failures are retained as non-blocking evidence and do not produce a failing exit status; argument, model-selection, and setup errors do.
 
 Features are also verified end-to-end against real Pi subagent sessions before release. See [CONTRIBUTING.md](./CONTRIBUTING.md) to contribute.
 

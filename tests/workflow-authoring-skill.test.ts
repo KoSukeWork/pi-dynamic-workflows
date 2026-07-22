@@ -184,12 +184,18 @@ test("generated capability index and exhaustive details are fresh and absent fro
   }
 });
 
-test("lifecycle guidance explains configured timeout and token-budget defaults", () => {
+test("authoring guidance makes invocation token budgets explicit opt-in gates", () => {
+  const skill = readFileSync(join(ROOT, SKILL_ROOT, "SKILL.md"), "utf8");
   const lifecycle = readFileSync(join(ROOT, SKILL_ROOT, "references/lifecycle.md"), "utf8");
 
+  assert.match(skill, /invocation-level token and time caps as opt-in user constraints, not defaults/i);
+  assert.match(lifecycle, /omit `tokenBudget` unless the user.*explicitly/is);
+  assert.match(lifecycle, /asked to choose.*every planned agent call.*retr.*synthesis.*verification.*headroom/is);
+  assert.match(lifecycle, /tight gate can terminate coverage.*does not reduce work already in flight/is);
   assert.match(lifecycle, /omitted `agentTimeoutMs`.*configured `defaultAgentTimeoutMs`.*otherwise.*unbounded/is);
   assert.match(lifecycle, /omitted `tokenBudget`.*configured `defaultTokenBudget`.*otherwise.*unlimited/is);
   assert.match(lifecycle, /soft pre-call gates.*concurrent work can overshoot/is);
+  assert.doesNotMatch(lifecycle, /set finite bounds[^.]*`tokenBudget`/i);
 });
 
 test("generated facts cover the lifecycle constraints taught by the skill", () => {
@@ -683,6 +689,7 @@ test("loop-until-done resets its consecutive dry streak after missing coverage",
 
 test("phased-budget recipe reports soft-gate spending and bounds later calls", async () => {
   const script = readFileSync(join(ROOT, SKILL_ROOT, "examples/phased-budgets.js"), "utf8");
+  assert.match(script, /invocation-level tokenBudget only when the user explicitly requests a cap/i);
   const labels: string[] = [];
   const result = await runWorkflow<{
     phases: Array<{ title: string; startSpent: number; endSpent: number; attempted: string[]; missing: string[] }>;

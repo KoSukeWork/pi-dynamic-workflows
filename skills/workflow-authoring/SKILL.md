@@ -25,6 +25,6 @@ Read only what the task needs:
 - Start with literal `export const meta = { name, description }`; declare phases as an array of used `{ title }` objects and enter each named phase.
 - Call `agent()` at least once, give every call a short unique `label`, and return plain JSON data explicitly.
 - Pair ordered results with stable work IDs before filtering. When one agent consumes another's selected result, include both its stable ID and actual data in the downstream prompt. Treat recoverable `null` as missing coverage and report it.
-- Bound fan-out, loops, retries, agents, concurrency, time, and token spend to the task.
+- Bound fan-out, loops, retries, agents, and concurrency to the task. Treat invocation-level token and time caps as opt-in user constraints, not defaults.
 - Use `log()` for new code; `console` is compatibility-only.
 - Write plain JavaScript without imports or filesystem modules. Pass nondeterminism through `args`; `Date.now()`, `Math.random()`, and no-argument `new Date()` are unavailable.

@@ -185,8 +185,8 @@ function parseArgs(args: string[]): CliOptions {
 function printUsage(): void {
   process.stdout.write(`Usage: npm run delivery-choice -- --model <provider/model> [--output <path>]
 
-Runs two optional delivery-choice scenarios against the real workflow tool definition.
-The evidence records whether the model kept the default background run or selected background:false for same-turn use.\n`);
+Runs three optional timing and token-budget scenarios against the real workflow tool definition.
+The evidence records background versus same-turn delivery, omitted budgets for ordinary requests, and exact user-supplied caps.\n`);
 }
 
 main().catch((error: unknown) => {

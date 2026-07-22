@@ -33,7 +33,7 @@ export const WORKFLOW_COMPREHENSION_SCENARIO_IDS = COMPREHENSION_SCENARIOS.map((
 export const WORKFLOW_AUTHORING_FROZEN_FILES = [
   {
     path: "skills/workflow-authoring/SKILL.md",
-    sha256: "cfd6de08089a3e234ee5168b59d9e18d5ecf18931820df559bcf90a6d8a697bc",
+    sha256: "ce60f85872722617e306aec4cf5cf39d5f2f922039a914c43149cd6a16225ebf",
   },
   {
     path: "skills/workflow-authoring/references/runtime.md",
@@ -49,7 +49,7 @@ export const WORKFLOW_AUTHORING_FROZEN_FILES = [
   },
   {
     path: "skills/workflow-authoring/references/lifecycle.md",
-    sha256: "e2f187a7b633beef0ca257e6782f72a140fc06b37a58aac423432d36d1dc19ee",
+    sha256: "ec3b851066b55c716362553d99680ba7a00275551750586c4fa74f603342ac62",
   },
   {
     path: "skills/workflow-authoring/references/pattern-selection.md",
@@ -218,31 +218,35 @@ const FROZEN_GUIDANCE_BY_CAPABILITY: Readonly<Record<string, readonly ProtectedG
     {
       path: LIFECYCLE_PATH,
       requiredText:
-        "Set finite bounds that match the work: `maxAgents`, `concurrency`, `agentRetries`, `agentTimeoutMs`, and `tokenBudget` at invocation time; loop and semantic-retry bounds inside the script.",
+        "Set finite bounds that match the work for `maxAgents`, `concurrency`, and `agentRetries`; bound loops and semantic retries inside the script.",
     },
   ],
   "workflow.tool-input.concurrency": [
     {
       path: LIFECYCLE_PATH,
       requiredText:
-        "Set finite bounds that match the work: `maxAgents`, `concurrency`, `agentRetries`, `agentTimeoutMs`, and `tokenBudget` at invocation time; loop and semantic-retry bounds inside the script.",
+        "Set finite bounds that match the work for `maxAgents`, `concurrency`, and `agentRetries`; bound loops and semantic retries inside the script.",
     },
   ],
   "workflow.tool-input.agentRetries": [
     {
       path: LIFECYCLE_PATH,
       requiredText:
-        "Set finite bounds that match the work: `maxAgents`, `concurrency`, `agentRetries`, `agentTimeoutMs`, and `tokenBudget` at invocation time; loop and semantic-retry bounds inside the script.",
+        "Set finite bounds that match the work for `maxAgents`, `concurrency`, and `agentRetries`; bound loops and semantic retries inside the script.",
     },
   ],
   "workflow.tool-input.agentTimeoutMs": [
     {
       path: LIFECYCLE_PATH,
       requiredText:
-        "Set finite bounds that match the work: `maxAgents`, `concurrency`, `agentRetries`, `agentTimeoutMs`, and `tokenBudget` at invocation time; loop and semantic-retry bounds inside the script.",
+        "Treat invocation-level `agentTimeoutMs` and `tokenBudget` as opt-in user constraints, not precautionary defaults.",
     },
   ],
   "workflow.tool-input.tokenBudget": [
+    {
+      path: LIFECYCLE_PATH,
+      requiredText: "Omit `tokenBudget` unless the user supplies a cap or explicitly asks you to choose one.",
+    },
     {
       path: LIFECYCLE_PATH,
       requiredText:

@@ -3,10 +3,17 @@ import test from "node:test";
 import { createEffortState, effortDirective, isSubstantive, registerEffortCommand } from "../src/effort-command.js";
 import { buildArmedWorkflowPrompt } from "../src/workflow-editor.js";
 
-test("effortDirective returns a tier nudge for high/ultra, nothing for off", () => {
+test("effortDirective shapes fan-out without inventing token budgets", () => {
+  const high = effortDirective("high") ?? "";
+  const ultra = effortDirective("ultra") ?? "";
+
   assert.equal(effortDirective("off"), undefined);
-  assert.match(effortDirective("high") ?? "", /HIGH/);
-  assert.match(effortDirective("ultra") ?? "", /ULTRA/);
+  assert.match(high, /HIGH/);
+  assert.match(ultra, /ULTRA/);
+  assert.match(high, /maxAgents/);
+  assert.match(ultra, /maxAgents/);
+  assert.doesNotMatch(high, /tokenBudget/);
+  assert.doesNotMatch(ultra, /tokenBudget/);
 });
 
 test("isSubstantive accepts real requests, rejects terse text and slash commands", () => {
