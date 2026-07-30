@@ -419,8 +419,11 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   onUsage?: (usage: AgentUsage) => void;
   /**
    * Model spec for this subagent: either `provider/modelId` (unambiguous) or a
-   * bare `modelId`. When it can't be resolved, the session default is used and
-   * a warning is logged. When omitted, the session default applies.
+   * bare `modelId`, parsed with the same grammar as Pi CLI's `--model`. When it
+   * can't be resolved to a known model, `run()` throws MODEL_NOT_FOUND rather
+   * than silently substituting the session default — a wrong-model run would
+   * otherwise look successful while quietly answering with different (or
+   * unauthenticated) weights. When omitted, the session default applies.
    */
   model?: string;
   /**
@@ -434,8 +437,6 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   tier?: string;
   /** Called with the resolved model id once known (for display/telemetry). */
   onModelResolved?: (modelId: string) => void;
-  /** Called when `model`/`tier`/phase resolved to a spec that wasn't found (fell back to session default). */
-  onModelFallback?: (requestedSpec: string) => void;
   /** Called with a compact snapshot of this subagent's message/tool history. */
   onHistory?: (history: AgentHistoryEntry[]) => void;
   /** Run this agent in a different working directory (e.g. an isolated worktree). */
@@ -724,21 +725,26 @@ export class WorkflowAgent {
 
     // Resolve a requested model spec to a Model object. Specs use Pi CLI-style
     // parsing, including an optional :thinking suffix such as gpt-5.5:xhigh.
-    // A given-but-unresolved spec falls back to the session default (with a
-    // warning) rather than failing.
+    // A given-but-unresolved spec throws MODEL_NOT_FOUND (recoverable:false —
+    // resolution is deterministic, so retrying the same spec is pointless) instead
+    // of silently continuing on the session default: a silent substitution would
+    // run real API calls against a different (or unauthenticated) model while the
+    // caller believes its pin was honored (#131).
     let resolvedModel: Model<any> | undefined;
     let resolvedThinkingLevel: CreateAgentSessionOptions["thinkingLevel"] | undefined;
     if (modelSpec) {
       const resolved = resolveModelSpecWithThinking(modelSpec, modelRegistry);
       if (resolved.warning) console.warn(`[workflow] ${resolved.warning}`);
-      if (resolved.model) {
-        resolvedModel = resolved.model;
-        resolvedThinkingLevel = resolved.thinkingLevel;
-        options.onModelResolved?.(resolved.resolvedSpec ?? canonicalModelSpec(resolved.model));
-      } else {
-        console.warn(`[workflow] model "${modelSpec}" not found; using session default`);
-        options.onModelFallback?.(modelSpec);
+      if (!resolved.model) {
+        throw new WorkflowError(
+          resolved.error ?? `Model "${modelSpec}" not found. Use /workflows-models to choose an available model.`,
+          WorkflowErrorCode.MODEL_NOT_FOUND,
+          { recoverable: false, agentLabel: options.label },
+        );
       }
+      resolvedModel = resolved.model;
+      resolvedThinkingLevel = resolved.thinkingLevel;
+      options.onModelResolved?.(resolved.resolvedSpec ?? canonicalModelSpec(resolved.model));
     }
 
     const agentDir = getAgentDir();

@@ -324,6 +324,71 @@ test("WorkflowAgent.run() rejects a non-object top-level schema before touching 
   );
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// WorkflowAgent.run(): an unresolvable `model` spec must fail loud (#131) — no
+// more silent fallback to the session default with only a console.warn.
+// ═══════════════════════════════════════════════════════════════════════════
+
+test("WorkflowAgent.run() throws MODEL_NOT_FOUND for an unresolvable model spec instead of silently using the session default", async () => {
+  const registry = {
+    getAll: () => [{ provider: "openrouter", id: "anthropic/claude-opus-4-8", name: "Claude" } as any],
+    getAvailable: () => [],
+    find: () => undefined,
+  } as any;
+
+  const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: registry });
+  await assert.rejects(
+    agent.run("task", { model: "totally-unknown/does-not-exist", label: "pin" }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowError);
+      assert.equal(error.code, WorkflowErrorCode.MODEL_NOT_FOUND);
+      assert.equal(error.recoverable, false, "a bad pin is deterministic — retrying it is pointless");
+      assert.match(error.message, /totally-unknown\/does-not-exist/);
+      assert.equal(error.agentLabel, "pin");
+      return true;
+    },
+  );
+});
+
+test("WorkflowAgent.run() still resolves a known model spec normally (no regression)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-model-pin-ok-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-model-pin-ok-cwd-"));
+  const core = createFauxCore({
+    provider: "fauxtest-pin",
+    models: [{ id: "faux-model", name: "Faux Model", contextWindow: 128000, maxTokens: 4096 }],
+  });
+  try {
+    await withFakeHomeAsync(home, async () => {
+      const runtime = await ModelRuntime.create({ authPath: join(home, "auth.json"), modelsPath: null });
+      runtime.registerProvider("fauxtest-pin", {
+        name: "Faux Test Pin",
+        baseUrl: "http://127.0.0.1:9/faux",
+        apiKey: "faux-dummy-key-not-used",
+        api: core.api,
+        streamSimple: core.streamSimple as never,
+        models: core.models.map((m) => ({
+          id: m.id,
+          name: m.name ?? m.id,
+          reasoning: false,
+          input: ["text"] as ("text" | "image")[],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: m.contextWindow ?? 128000,
+          maxTokens: m.maxTokens ?? 4096,
+        })),
+      });
+      const registry = new ModelRegistry(runtime);
+      core.setResponses([fauxAssistantMessage("pinned-model-answer", { stopReason: "stop" })]);
+
+      const agent = new WorkflowAgent({ cwd, modelRegistry: registry });
+      const text = await agent.run("task", { model: "fauxtest-pin/faux-model", label: "pin-ok" });
+      assert.ok(text.includes("pinned-model-answer"));
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("WorkflowAgent.run() still completes with a normal object schema (no regression)", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-schema-ok-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-schema-ok-cwd-"));
