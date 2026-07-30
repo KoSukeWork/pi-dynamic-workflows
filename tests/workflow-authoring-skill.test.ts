@@ -327,7 +327,8 @@ test("generated helper facts expose exact callback, option, result, and failure 
 
   assert.match(pipeline?.constraints.join(" ") ?? "", /null.*next stage/i);
   assert.match(agent?.constraints.join(" ") ?? "", /schema noncompliance.*nonrecoverable/i);
-  assert.match(agent?.constraints.join(" ") ?? "", /selected.*unavailable.*session default/i);
+  assert.match(agent?.constraints.join(" ") ?? "", /explicit model.*unavailable.*throws MODEL_NOT_FOUND/i);
+  assert.match(agent?.constraints.join(" ") ?? "", /implicit default medium tier.*session default when unavailable/i);
   assert.match(agent?.constraints.join(" ") ?? "", /worktree isolation.*best-effort/i);
   assert.match(background?.constraints.join(" ") ?? "", /background workflows are headless/i);
   assert.match(background?.constraints.join(" ") ?? "", /checkpoint.*foreground confirmation/i);
