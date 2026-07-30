@@ -221,6 +221,42 @@ describe("resolveModelSpecWithThinking parity with pi CLI's real resolveCliModel
     );
   });
 
+  it("property: activates the auth-preference branch and still agrees with pi's real resolveCliModel", () => {
+    // The previous cross-check ("ambiguous vendor/provider collisions") never
+    // actually reaches the auth-preference branch: candidatesA's pattern (idB)
+    // essentially never exact-matches idA, so `model` stays undefined there and
+    // the match instead comes from the inferredProvider fallback further down —
+    // and neither side supplied hasConfiguredAuth, so even if it HAD reached
+    // that branch, both `ours.hasConfiguredAuth` (absent → branch skipped) and
+    // pi's `hasConfiguredAuth` (defaults to true → its own guard short-circuits)
+    // would no-op. This test forces the exact shape that lands in the branch:
+    // providerA has a LITERAL exact-id model (so `model` resolves inside
+    // providerA's own candidate list, not via the later fallback), providerA is
+    // UNAUTHENTICATED, and the identical full string is also a literal id under
+    // an AUTHENTICATED otherProvider.
+    fc.assert(
+      fc.property(providerSpec, providerSpec, segment, (providerA, otherProvider, idB) => {
+        fc.pre(providerA !== otherProvider);
+        const models = [model(providerA, idB), model(otherProvider, `${providerA}/${idB}`)];
+        const spec = `${providerA}/${idB}`;
+        const authenticated = new Set([otherProvider]);
+
+        const ours = resolveModelSpecWithThinking(spec, {
+          getAll: () => models,
+          hasConfiguredAuth: (m) => authenticated.has(m.provider),
+        });
+        const pi = resolveCliModel({ cliModel: spec, modelRuntime: fakeModelRuntime(models, authenticated) });
+
+        assert.deepEqual(ours.model, pi.model, `model mismatch for spec "${spec}"`);
+        assert.equal(ours.thinkingLevel, pi.thinkingLevel);
+        // Sanity check that the branch under test was actually exercised: the
+        // authenticated compound match won, not the unauthenticated exact one.
+        assert.equal(ours.model?.provider, otherProvider, "the auth-preference branch must have fired");
+      }),
+      { numRuns: 200 },
+    );
+  });
+
   it("property: agrees with pi on plain provider/model[:thinking] specs", () => {
     fc.assert(
       fc.property(
