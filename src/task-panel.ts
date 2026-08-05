@@ -138,6 +138,112 @@ function deliveredMaxChars(opts: { loadSettings?: () => WorkflowSettings }): num
 }
 
 /**
+ * Generation-bound delivery state lives on the manager so listeners registered
+ * once can keep working across session replacements (/reload, /new, resume,
+ * fork). See installResultDelivery / suspendResultDelivery.
+ */
+interface DeliveryHolder {
+  pi: ExtensionAPI;
+  loadSettings?: () => WorkflowSettings;
+  /**
+   * When true, do not call pi.sendMessage — only enqueue. Set for the whole
+   * window between session_shutdown and the next generation's install, so a
+   * completion cannot land on a dying session (or a just-invalidated ctx).
+   */
+  suspended: boolean;
+  /** Contents that failed to send or arrived while suspended; flushed on resume. */
+  pending: string[];
+  /**
+   * Generation counter bumped on every install/refresh. An in-flight send's
+   * rejection handler captures the generation it started under; if a newer
+   * generation has already installed by the time the rejection lands, the
+   * handler must flush immediately — otherwise the content sits in `pending`
+   * until some later install happens to run.
+   */
+  generation: number;
+}
+
+type DeliveryManager = WorkflowManager & {
+  __deliveryInstalled?: boolean;
+  __holder?: DeliveryHolder;
+};
+
+function deliveryManager(manager: WorkflowManager): DeliveryManager {
+  return manager as DeliveryManager;
+}
+
+function enqueuePending(holder: DeliveryHolder, content: string): void {
+  // Soft-cap only: warn loudly, never drop. The full result is also on disk
+  // via the run JSON pointer in deliverText, but conversation delivery is the
+  // contract the tool promises — silent shift() would break it.
+  if (holder.pending.length >= 32) {
+    console.warn(
+      `[workflow-delivery] pending queue at ${holder.pending.length} entries; ` +
+        "delivery is stalled (no successful flush since suspend/failure). " +
+        "Results remain on disk via /workflows.",
+    );
+  }
+  holder.pending.push(content);
+}
+
+function trySend(holder: DeliveryHolder, content: string): void {
+  const startedGeneration = holder.generation;
+  try {
+    const ret = holder.pi.sendMessage(
+      { customType: "workflow-result", content, display: true },
+      { triggerTurn: true, deliverAs: "followUp" },
+    );
+    // sendMessage may return a promise (defensive — current pi types it void).
+    // On rejection: re-queue, and if a newer generation already installed
+    // while we were in flight, flush now so the content is not stranded.
+    void Promise.resolve(ret).catch((err: unknown) => {
+      enqueuePending(holder, content);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[workflow-delivery] async send failed; queued for retry: ${msg}`);
+      if (holder.generation !== startedGeneration && !holder.suspended) {
+        flushPending(holder);
+      }
+    });
+  } catch (err) {
+    enqueuePending(holder, content);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[workflow-delivery] send failed; queued for retry: ${msg}`);
+  }
+}
+
+function flushPending(holder: DeliveryHolder): void {
+  if (holder.suspended || holder.pending.length === 0) return;
+  const queued = holder.pending.splice(0, holder.pending.length);
+  for (const content of queued) trySend(holder, content);
+}
+
+/**
+ * Stop live sends on this manager. In-flight completions only enqueue until
+ * {@link resumeResultDelivery} runs (from session_start, after Pi has bound
+ * the extension runtime) or the process exits (quit — results stay on disk).
+ *
+ * Call from session_shutdown BEFORE handoff or discard so a completion that
+ * races the teardown cannot deliver into the outgoing session.
+ */
+export function suspendResultDelivery(manager: WorkflowManager): void {
+  const holder = deliveryManager(manager).__holder;
+  if (holder) holder.suspended = true;
+}
+
+/**
+ * Unsuspend and flush any queued deliveries. Must run only after Pi has
+ * finished constructing the AgentSession and bound sendMessage (i.e. from
+ * session_start) — calling it from the extension factory hits the
+ * "runtime not initialized" stub and re-queues forever.
+ */
+export function resumeResultDelivery(manager: WorkflowManager): void {
+  const holder = deliveryManager(manager).__holder;
+  if (!holder) return;
+  holder.suspended = false;
+  flushPending(holder);
+}
+
+/**
  * When a background run finishes (or fails), deliver its result back into the
  * conversation AND continue the turn so the assistant can act on it — without
  * blocking the user meanwhile:
@@ -147,43 +253,42 @@ function deliveredMaxChars(opts: { loadSettings?: () => WorkflowSettings }): num
  *  - `deliverAs: "followUp"` means that if the user is busy in another turn, the
  *    result is queued and picked up after that turn finishes — never interrupting.
  *
- * Set up once per extension; idempotent via an internal guard.
+ * Set up once per extension; idempotent via an internal guard. Across session
+ * replacement the manager (and this listener) survive via the handoff path;
+ * each new generation only refreshes `holder.pi` and flushes any messages that
+ * failed or arrived while delivery was suspended.
  */
 export function installResultDelivery(
   pi: ExtensionAPI,
   manager: WorkflowManager,
   opts: { loadSettings?: () => WorkflowSettings } = {},
 ): void {
-  // Mutable holder on the manager shared by extension generations across /reload.
-  const m = manager as unknown as {
-    __deliveryInstalled?: boolean;
-    __holder?: { pi: ExtensionAPI; loadSettings?: () => WorkflowSettings };
-  };
+  const m = deliveryManager(manager);
   if (m.__deliveryInstalled) {
-    // The manager and listeners survive /reload. Refresh every generation-bound
-    // dependency while leaving listener registration exactly-once.
+    // The manager and listeners survive session replacement. Refresh every
+    // generation-bound dependency and bump the generation (so in-flight
+    // rejects from the previous pi can self-flush once resumed). Do NOT
+    // unsuspend or flush here: the factory runs before Pi bindCore(), so
+    // sendMessage is still the "runtime not initialized" stub. session_start
+    // calls resumeResultDelivery() once the runtime is live.
     if (m.__holder) {
       m.__holder.pi = pi;
       m.__holder.loadSettings = opts.loadSettings;
+      m.__holder.generation += 1;
     }
     return;
   }
   m.__deliveryInstalled = true;
-  m.__holder = { pi, loadSettings: opts.loadSettings };
+  m.__holder = { pi, loadSettings: opts.loadSettings, suspended: false, pending: [], generation: 0 };
 
   const deliver = (content: string) => {
-    try {
-      const ret = m.__holder?.pi.sendMessage(
-        { customType: "workflow-result", content, display: true },
-        { triggerTurn: true, deliverAs: "followUp" },
-      );
-      // sendMessage may return a promise; a sync try/catch can't catch its
-      // rejection, so swallow the async path too. A stale ctx after /reload is
-      // the expected failure — the result is still visible via /workflows.
-      void Promise.resolve(ret).catch(() => {});
-    } catch {
-      // Synchronous failure (e.g. stale ctx) — result still visible via /workflows.
+    const holder = m.__holder;
+    if (!holder) return;
+    if (holder.suspended) {
+      enqueuePending(holder, content);
+      return;
     }
+    trySend(holder, content);
   };
 
   manager.on("complete", ({ runId }: { runId: string }) => {

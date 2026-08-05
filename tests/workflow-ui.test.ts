@@ -1201,3 +1201,108 @@ test("stopping a run whose manager.stop throws (cold-run lease/persistence failu
   assert.match(notifications[0].message, /stop.*failed/);
   assert.match(notifications[0].message, /ENOSPC/);
 });
+
+test("navigator save registers via manager + live loadWorkflow so a same-name overwrite runs the latest script", async () => {
+  const { ui, notifications, getComponent } = fakeUiCapturingComponent();
+
+  type Stored = { name: string; description?: string; script: string; parameters?: SavedWorkflow["parameters"] };
+  const store = new Map<string, Stored>();
+  const storage = {
+    list: () =>
+      [...store.values()].map((w) => ({
+        name: w.name,
+        description: w.description ?? "",
+        location: "project" as const,
+        path: `/x/${w.name}.json`,
+        savedAt: "2025-01-01",
+      })),
+    save: (w: Stored & { location?: string }) => {
+      const saved = {
+        name: w.name,
+        description: w.description ?? "",
+        script: w.script,
+        parameters: w.parameters,
+        location: "project" as const,
+        path: `/x/${w.name}.json`,
+        savedAt: "2025-01-01",
+      };
+      store.set(w.name, saved);
+      return saved;
+    },
+    load: (name: string) => store.get(name) ?? null,
+    delete: () => true,
+  };
+
+  const run = {
+    runId: "run-1",
+    workflowName: "scan",
+    status: "completed",
+    phases: [],
+    agents: [],
+    logs: [],
+    script: "export SCRIPT_V1",
+  } as unknown as PersistedRunState;
+
+  const started: string[] = [];
+  const fakeManager = {
+    on: () => {},
+    off: () => {},
+    listRuns: () => [run],
+    getRun: () => undefined,
+    startInBackground: (script: string) => {
+      started.push(script);
+      return { runId: "bg-nav", promise: new Promise(() => {}) };
+    },
+  } as unknown as WorkflowManager;
+
+  const commands: Array<{
+    name: string;
+    description?: string;
+    handler: (args: string, ctx: unknown) => unknown;
+  }> = [];
+  const pi = {
+    getCommands: () => commands.map((c) => ({ name: c.name })),
+    registerCommand: (
+      name: string,
+      spec: { description?: string; handler: (args: string, ctx: unknown) => unknown },
+    ) => {
+      commands.push({ name, description: spec.description, handler: spec.handler });
+    },
+    sendMessage: () => {},
+  } as unknown as ExtensionAPI;
+
+  openWorkflowNavigator(pi, fakeManager, ui, {
+    storage,
+    cwd: "/cwd",
+    getStorage: () => storage,
+    getCwd: () => "/cwd",
+    getManager: () => fakeManager,
+  }).catch(() => {});
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const component = getComponent();
+  assert.ok(component, "openWorkflowNavigator should have produced a component");
+
+  // First save — registers /scan against SCRIPT_V1.
+  component?.handleInput("s");
+  assert.ok(notifications.some((n) => n.message.includes("Saved /scan")));
+  assert.equal(commands.filter((c) => c.name === "scan").length, 1);
+  assert.equal(store.get("scan")?.script, "export SCRIPT_V1");
+
+  // Overwrite the same name with a new script; registration is idempotent but
+  // the live loader must pick up storage's latest value.
+  run.script = "export SCRIPT_V2";
+  component?.handleInput("s");
+  assert.equal(store.get("scan")?.script, "export SCRIPT_V2");
+  assert.equal(commands.filter((c) => c.name === "scan").length, 1, "must not double-register the command");
+
+  await commands[0].handler("", {
+    ui: { notify: () => {}, setStatus: () => {} },
+  });
+  assert.deepEqual(
+    started,
+    ["export SCRIPT_V2"],
+    "handler must execute the second save's script via manager.startInBackground (not the frozen first snapshot / inline path)",
+  );
+});

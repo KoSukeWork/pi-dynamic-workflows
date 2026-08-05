@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   claimWorkflowRuntime,
@@ -77,11 +77,17 @@ test("a changed package version is rejected and its live runs are paused for rec
     ...runtime(cwd),
     extensionVersion: `${WORKFLOW_EXTENSION_VERSION}-next`,
     manager: {
-      listRuns: () => [
+      // Stranded pause must walk live in-memory runs, not the session-filtered
+      // listRuns() view (which hides runs whose frozen sessionId no longer
+      // matches the bound session after a replacement).
+      listLiveRuns: () => [
         { runId: "running-1", status: "running" },
         { runId: "paused-1", status: "paused" },
         { runId: "done-1", status: "completed" },
       ],
+      listRuns: () => {
+        throw new Error("pauseStranded must not call session-filtered listRuns()");
+      },
       pause: (runId: string) => {
         paused.push(runId);
         return true;
@@ -106,10 +112,13 @@ test("a handoff nobody claims before its TTL expires pauses any still-running ru
   const value: WorkflowReloadRuntime = {
     ...runtime(cwd),
     manager: {
-      listRuns: () => [
+      listLiveRuns: () => [
         { runId: "running-1", status: "running" },
         { runId: "done-1", status: "completed" },
       ],
+      listRuns: () => {
+        throw new Error("pauseStranded must not call session-filtered listRuns()");
+      },
       pause: (runId: string) => {
         paused.push(runId);
         return true;
@@ -124,6 +133,26 @@ test("a handoff nobody claims before its TTL expires pauses any still-running ru
 
   assert.deepEqual(paused, ["running-1"], "the stranded running run must be paused, not left to burn tokens");
   assert.equal(takeWorkflowRuntime(cwd), undefined, "the expired entry must be gone so it can't be claimed later");
+});
+
+test("pauseStranded walks live runs even when listRuns is session-filtered empty", () => {
+  const cwd = `/tmp/reload-handoff-${process.pid}-live-vs-filtered`;
+  const paused: string[] = [];
+  const value: WorkflowReloadRuntime = {
+    ...runtime(cwd),
+    manager: {
+      // After setSessionId(B), listRuns() returns [] for a run still owned by A.
+      listRuns: () => [],
+      listLiveRuns: () => [{ runId: "orphan-of-session-A", status: "running" }],
+      pause: (runId: string) => {
+        paused.push(runId);
+        return true;
+      },
+    } as unknown as WorkflowReloadRuntime["manager"],
+  };
+
+  assert.equal(pauseStrandedWorkflowRuntime(value), 1);
+  assert.deepEqual(paused, ["orphan-of-session-A"]);
 });
 
 test(
@@ -160,20 +189,76 @@ test(
   }),
 );
 
-test("reload handoffs are isolated by cwd and identity-guarded on cleanup", () => {
+test("reload handoff is a single process-wide slot; last stage wins; stale discard is a no-op", () => {
   const cwdA = `/tmp/reload-handoff-${process.pid}-a`;
   const cwdB = `/tmp/reload-handoff-${process.pid}-b`;
   const first = runtime(cwdA);
   const replacement = runtime(cwdA);
   const other = runtime(cwdB);
-  discardWorkflowRuntime(cwdA);
-  discardWorkflowRuntime(cwdB);
+  discardWorkflowRuntime();
 
   handoffWorkflowRuntime(first);
   handoffWorkflowRuntime(replacement);
-  handoffWorkflowRuntime(other);
+  // Stale identity discard must not clear the newer slot.
   discardWorkflowRuntime(cwdA, first);
+  assert.equal(takeWorkflowRuntime(), replacement, "stale cleanup cannot delete a newer generation");
 
-  assert.equal(takeWorkflowRuntime(cwdA), replacement, "stale cleanup cannot delete a newer generation");
-  assert.equal(takeWorkflowRuntime(cwdB), other);
+  handoffWorkflowRuntime(other);
+  // Claim via process.cwd() (factory path) still gets the staged runtime even
+  // when its project cwd differs from the launch directory.
+  assert.equal(claimWorkflowRuntime(process.cwd()).compatible, other);
+  assert.equal(takeWorkflowRuntime(), undefined, "slot is empty after claim");
+});
+
+test("handoff staged under a session project cwd is claimable via process.cwd() (Pi launch-dir model)", () => {
+  const launch = process.cwd();
+  const project = `/tmp/reload-handoff-${process.pid}-project`;
+  discardWorkflowRuntime();
+
+  const mgr = {
+    getCwd: () => project,
+    listLiveRuns: () => [],
+    listRuns: () => [],
+    pause: () => false,
+  };
+  const value: WorkflowReloadRuntime = {
+    cwd: project,
+    extensionVersion: WORKFLOW_EXTENSION_VERSION,
+    manager: mgr as unknown as WorkflowReloadRuntime["manager"],
+    effort: { level: "high" },
+  };
+  handoffWorkflowRuntime(value);
+
+  // Factory only knows process.cwd() === launch, which differs from project.
+  assert.notEqual(resolve(launch), resolve(project));
+  const claim = claimWorkflowRuntime(launch);
+  assert.equal(claim.compatible, value, "factory must claim the project manager via the process-wide slot");
+  assert.equal(resolve(claim.compatible?.manager.getCwd()), resolve(project));
+});
+
+test("overwriting a staged handoff pauses the displaced runtime's live runs", () => {
+  discardWorkflowRuntime();
+  const paused: string[] = [];
+  const first: WorkflowReloadRuntime = {
+    cwd: `/tmp/reload-handoff-${process.pid}-overwrite-a`,
+    extensionVersion: WORKFLOW_EXTENSION_VERSION,
+    manager: {
+      listLiveRuns: () => [{ runId: "running-a", status: "running" }],
+      listRuns: () => [],
+      pause: (runId: string) => {
+        paused.push(runId);
+        return true;
+      },
+      getCwd: () => `/tmp/reload-handoff-${process.pid}-overwrite-a`,
+    } as unknown as WorkflowReloadRuntime["manager"],
+    effort: { level: "high" },
+  };
+  const second = runtime(`/tmp/reload-handoff-${process.pid}-overwrite-b`);
+
+  handoffWorkflowRuntime(first);
+  handoffWorkflowRuntime(second);
+
+  assert.deepEqual(paused, ["running-a"], "displaced staged runtime must be paused, not left burning tokens");
+  assert.equal(takeWorkflowRuntime(), second, "slot holds only the latest staged runtime");
+  discardWorkflowRuntime();
 });

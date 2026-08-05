@@ -7,6 +7,8 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 
 type TaskPanelModule = {
   installResultDelivery: (pi: ExtensionAPI, manager: unknown, opts?: unknown) => void;
+  suspendResultDelivery: (manager: unknown) => void;
+  resumeResultDelivery: (manager: unknown) => void;
   installTaskPanel: (pi: ExtensionAPI | null, manager: unknown, ui: unknown) => void;
 };
 
@@ -294,8 +296,8 @@ describe("installResultDelivery", () => {
     assert.equal(calls.length, 1); // exactly once, not twice
   });
 
-  it("does not crash when sendMessage throws (stale ctx after reload)", () => {
-    const pi = {
+  it("does not crash when sendMessage throws (stale ctx); queues and flushes on refresh", () => {
+    const stalePi = {
       sendMessage: (_msg: unknown, _opts?: unknown) => {
         throw new Error("This extension ctx is stale");
       },
@@ -305,12 +307,171 @@ describe("installResultDelivery", () => {
       setActiveTools: () => {},
       reload: () => Promise.resolve(),
     };
+    const freshPi = createMockPi();
     const manager = createMockManager(makeRun());
 
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    // Should not throw — stale ctx is silently swallowed
+    mod.installResultDelivery(stalePi as unknown as ExtensionAPI, manager);
+    // Must not throw — the failed send is queued for the next generation.
     manager.emit("complete", { runId: "test-run-1" });
-    assert.ok(true, "should not throw"); // reached without crash
+
+    // Factory-time install only refreshes the holder; session_start resumes.
+    mod.installResultDelivery(freshPi as unknown as ExtensionAPI, manager);
+    assert.equal(
+      (freshPi as unknown as { _calls: unknown[] })._calls.length,
+      0,
+      "install alone must not flush — runtime may still be unbound",
+    );
+    mod.resumeResultDelivery(manager);
+    const calls = (freshPi as unknown as { _calls: { content: string }[] })._calls;
+    assert.equal(calls.length, 1, "resume must flush onto the fresh pi");
+    assert.ok(calls[0].content.includes("test-workflow"));
+  });
+
+  it("suspends live sends and flushes the queue when the next generation installs", () => {
+    const pi1 = createMockPi();
+    const pi2 = createMockPi();
+    const manager = createMockManager(makeRun());
+
+    mod.installResultDelivery(pi1 as unknown as ExtensionAPI, manager);
+    mod.suspendResultDelivery(manager);
+    manager.emit("complete", { runId: "test-run-1" });
+    assert.equal(
+      (pi1 as unknown as { _calls: unknown[] })._calls.length,
+      0,
+      "suspended delivery must not call the dying pi",
+    );
+
+    mod.installResultDelivery(pi2 as unknown as ExtensionAPI, manager);
+    assert.equal(
+      (pi2 as unknown as { _calls: unknown[] })._calls.length,
+      0,
+      "install alone must not flush before runtime bind",
+    );
+    mod.resumeResultDelivery(manager);
+    const calls = (pi2 as unknown as { _calls: { content: string }[] })._calls;
+    assert.equal(calls.length, 1, "resume must deliver pending completion into the new session");
+    assert.ok(calls[0].content.includes("All tests passed"));
+  });
+
+  it("re-queues an async sendMessage rejection and flushes it on the next install", async () => {
+    let rejectSend: ((err: Error) => void) | undefined;
+    const failingPi = {
+      sendMessage: (_msg: unknown, _opts?: unknown) =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSend = reject;
+        }),
+      registerTool: () => {},
+      on: () => {},
+      getActiveTools: () => [],
+      setActiveTools: () => {},
+      reload: () => Promise.resolve(),
+    };
+    const freshPi = createMockPi();
+    const manager = createMockManager(makeRun());
+
+    mod.installResultDelivery(failingPi as unknown as ExtensionAPI, manager);
+    manager.emit("complete", { runId: "test-run-1" });
+    assert.ok(rejectSend, "sendMessage should have returned a pending promise");
+    rejectSend(new Error("network blip"));
+    // Let the rejection microtask run and re-queue.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    mod.installResultDelivery(freshPi as unknown as ExtensionAPI, manager);
+    mod.resumeResultDelivery(manager);
+    const calls = (freshPi as unknown as { _calls: { content: string }[] })._calls;
+    assert.equal(calls.length, 1, "async failure must be retried on the fresh pi after resume");
+  });
+
+  it("flushes immediately when an in-flight send rejects AFTER the next generation installed", async () => {
+    // The real race: generation N's promise is still pending when generation
+    // N+1 installs and flushes (empty queue). N's rejection must not leave the
+    // content stranded until some later N+2 install.
+    let rejectSend: ((err: Error) => void) | undefined;
+    const failingPi = {
+      sendMessage: (_msg: unknown, _opts?: unknown) =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSend = reject;
+        }),
+      registerTool: () => {},
+      on: () => {},
+      getActiveTools: () => [],
+      setActiveTools: () => {},
+      reload: () => Promise.resolve(),
+    };
+    const freshPi = createMockPi();
+    const manager = createMockManager(makeRun());
+
+    mod.installResultDelivery(failingPi as unknown as ExtensionAPI, manager);
+    manager.emit("complete", { runId: "test-run-1" });
+    assert.ok(rejectSend);
+
+    // Next generation installs + resumes BEFORE the rejection lands.
+    mod.installResultDelivery(freshPi as unknown as ExtensionAPI, manager);
+    mod.resumeResultDelivery(manager);
+    assert.equal(
+      (freshPi as unknown as { _calls: unknown[] })._calls.length,
+      0,
+      "nothing queued yet — the in-flight send has not rejected",
+    );
+
+    rejectSend(new Error("late network blip"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const calls = (freshPi as unknown as { _calls: { content: string }[] })._calls;
+    assert.equal(calls.length, 1, "late rejection must self-flush onto the already-resumed generation");
+    assert.ok(calls[0].content.includes("test-workflow"));
+  });
+
+  it("never silently drops pending deliveries when the queue grows past the soft cap", () => {
+    const pi1 = createMockPi();
+    const pi2 = createMockPi();
+    const manager = createMockManager(makeRun());
+
+    mod.installResultDelivery(pi1 as unknown as ExtensionAPI, manager);
+    mod.suspendResultDelivery(manager);
+    for (let i = 0; i < 40; i++) {
+      manager.emit("complete", { runId: "test-run-1" });
+    }
+
+    mod.installResultDelivery(pi2 as unknown as ExtensionAPI, manager);
+    mod.resumeResultDelivery(manager);
+    const calls = (pi2 as unknown as { _calls: unknown[] })._calls;
+    assert.equal(calls.length, 40, "soft-cap must warn, never shift() away a queued result");
+  });
+
+  it("keeps delivery suspended across factory install until resumeResultDelivery", () => {
+    const unboundPi = {
+      sendMessage: () => {
+        throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.");
+      },
+      registerTool: () => {},
+      on: () => {},
+      getActiveTools: () => [],
+      setActiveTools: () => {},
+      reload: () => Promise.resolve(),
+    };
+    const boundPi = createMockPi();
+    const manager = createMockManager(makeRun());
+
+    // Simulate extension factory: install then immediately suspend (as workflow.ts does).
+    mod.installResultDelivery(unboundPi as unknown as ExtensionAPI, manager);
+    mod.suspendResultDelivery(manager);
+    manager.emit("complete", { runId: "test-run-1" });
+    // Re-install as a fresh factory would (still pre-bindCore).
+    mod.installResultDelivery(unboundPi as unknown as ExtensionAPI, manager);
+    assert.equal(
+      (boundPi as unknown as { _calls: unknown[] })._calls.length,
+      0,
+      "must not attempt send while runtime unbound",
+    );
+
+    // session_start: swap in the bound pi via install, then resume.
+    mod.installResultDelivery(boundPi as unknown as ExtensionAPI, manager);
+    mod.resumeResultDelivery(manager);
+    const calls = (boundPi as unknown as { _calls: { content: string }[] })._calls;
+    assert.equal(calls.length, 1, "session_start resume flushes the pre-bind queue");
   });
 
   // ── Only background runs are delivered ──

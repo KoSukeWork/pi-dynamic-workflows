@@ -1083,3 +1083,80 @@ test(
     assert.equal(new WorkflowManager({ cwd, sessionId: "s1" }).listAllRuns().length, 2);
   }),
 );
+
+test(
+  "live run freezes sessionId at start; setSessionId does not re-home it; adopt migrates intentionally",
+  withTempCwd(async (cwd) => {
+    /** Agent that blocks until the test pauses/aborts the run. */
+    function deferredAgent() {
+      const pending = new Map<number, { resolve: (v: unknown) => void }>();
+      let i = 0;
+      return {
+        async run() {
+          const idx = i++;
+          return new Promise((resolve) => pending.set(idx, { resolve }));
+        },
+      };
+    }
+    const script = `export const meta = { name: 'own', description: 'x' }
+const a = await agent('hi', { label: 'a' })
+return a`;
+
+    const m = new WorkflowManager({ cwd, sessionId: "session-A", agent: deferredAgent() });
+    m.on("error", () => {});
+    const { runId } = m.startInBackground(script);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const live = m.getRun(runId);
+    assert.ok(live);
+    assert.equal(live.sessionId, "session-A", "frozen at start");
+    assert.deepEqual(
+      m.listRuns().map((r) => r.runId),
+      [runId],
+    );
+
+    // Switch the manager's bound session the way session_start does after /new.
+    m.setSessionId("session-B");
+    assert.equal(m.listRuns().length, 0, "without adopt, the new session's filtered view hides the still-A-owned run");
+    assert.equal(m.getRun(runId)?.sessionId, "session-A", "setSessionId must not mutate the live run");
+    assert.deepEqual(
+      m
+        .listLiveRuns()
+        .filter((r) => r.status === "running")
+        .map((r) => r.runId),
+      [runId],
+      "listLiveRuns still sees it regardless of session filter",
+    );
+    // Stranded pause must find it via listLiveRuns even when listRuns is empty.
+    assert.equal(m.pause(runId), true);
+    assert.equal(m.getRun(runId)?.status, "paused");
+    // Persisted owner must still be A (pause writes managed.sessionId, not this.sessionId).
+    assert.equal(m.getPersistence().load(runId)?.sessionId, "session-A");
+
+    // Fresh manager: start under A, switch to B, adopt — panel must see it under B.
+    const m2 = new WorkflowManager({ cwd, sessionId: "session-A", agent: deferredAgent() });
+    m2.on("error", () => {});
+    const { runId: run2 } = m2.startInBackground(script);
+    await new Promise((r) => setTimeout(r, 30));
+    m2.setSessionId("session-B");
+    assert.equal(m2.listRuns().length, 0);
+    const adopted = m2.adoptLiveRunsToSession("session-B");
+    assert.equal(adopted, 1);
+    assert.equal(m2.getRun(run2)?.sessionId, "session-B");
+    assert.deepEqual(
+      m2.listRuns().map((r) => r.runId),
+      [run2],
+      "after adopt, the new session sees the in-flight run",
+    );
+    assert.equal(m2.getPersistence().load(run2)?.sessionId, "session-B");
+    m2.pause(run2);
+  }),
+);
+
+test(
+  "getCwd returns the manager's construction cwd",
+  withTempCwd(async (cwd) => {
+    const m = new WorkflowManager({ cwd });
+    assert.equal(m.getCwd(), cwd);
+  }),
+);

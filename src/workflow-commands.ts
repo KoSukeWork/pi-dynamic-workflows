@@ -114,8 +114,14 @@ function renderPersistedStatus(run: PersistedRunState): string {
 export interface WorkflowCommandOptions {
   /** Saved-workflow storage, enabling `/workflows save`. */
   storage?: WorkflowStorage;
+  /** Live storage accessor when the extension may replace storage after session_start. */
+  getStorage?: () => WorkflowStorage | undefined;
   /** Working directory for saved workflows registered via `save`. */
   cwd?: string;
+  /** Live cwd accessor. */
+  getCwd?: () => string;
+  /** Live manager accessor; preferred over a closed-over manager. */
+  getManager?: () => WorkflowManager;
   /** Standing effort mode; when high/ultra, `/workflows run` carries its directive too. */
   effort?: EffortState;
 }
@@ -123,9 +129,15 @@ export interface WorkflowCommandOptions {
 /** Register the `/workflows` command against the shared manager. Idempotent. */
 export function registerWorkflowCommands(
   pi: ExtensionAPI,
-  manager: WorkflowManager,
+  manager: WorkflowManager | (() => WorkflowManager),
   opts: WorkflowCommandOptions = {},
 ): void {
+  // Prefer opts.getManager when provided; otherwise accept a getter (or value)
+  // as the second argument. Both forms are supported so embedders can pass
+  // either a live accessor bag or a bare manager.
+  const getManager = opts.getManager ?? (typeof manager === "function" ? manager : () => manager);
+  const getCwd = () => opts.getCwd?.() ?? opts.cwd ?? process.cwd();
+  const getStorage = () => opts.getStorage?.() ?? opts.storage;
   try {
     const taken = (pi.getCommands?.() ?? []).some((c: { name: string }) => c.name === "workflows");
     if (taken) return;
@@ -137,6 +149,7 @@ export function registerWorkflowCommands(
     description:
       "Manage workflow runs — no args (opens navigator) | run <prompt> | status/stop/pause/resume <id> | rm <id> | save <name> [runId]",
     async handler(args: string, ctx: ExtensionCommandContext) {
+      const manager = getManager();
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const sub = (parts[0] ?? "list").toLowerCase();
       const id = parts[1];
@@ -184,11 +197,23 @@ export function registerWorkflowCommands(
           // Interactive navigator when a UI is available; plain text otherwise
           // (print/RPC mode) or when the user explicitly asks for `list`.
           if (sub !== "list" && ctx.hasUI) {
-            await openWorkflowNavigator(pi, manager, ctx.ui, { storage: opts.storage, cwd: opts.cwd });
+            await openWorkflowNavigator(pi, manager, ctx.ui, {
+              storage: getStorage(),
+              cwd: getCwd(),
+              getStorage,
+              getCwd,
+              getManager,
+            });
             return;
           }
           if (parts.length === 0 && ctx.hasUI) {
-            await openWorkflowNavigator(pi, manager, ctx.ui, { storage: opts.storage, cwd: opts.cwd });
+            await openWorkflowNavigator(pi, manager, ctx.ui, {
+              storage: getStorage(),
+              cwd: getCwd(),
+              getStorage,
+              getCwd,
+              getManager,
+            });
             return;
           }
           const runs = manager.listRuns();
@@ -251,8 +276,8 @@ export function registerWorkflowCommands(
         case "save": {
           const name = id;
           if (!name) return ctx.ui.notify("Usage: /workflows save <name> [runId]", "warning");
-          if (!opts.storage) return ctx.ui.notify("Saving is not available (no storage configured)", "error");
-          const storage = opts.storage;
+          const storage = getStorage();
+          if (!storage) return ctx.ui.notify("Saving is not available (no storage configured)", "error");
           const runs = manager.listRuns();
           const runIdArg = parts[2];
           // Pick the named run, else the most recent run that still has its script.
@@ -273,8 +298,16 @@ export function registerWorkflowCommands(
             ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
             return;
           }
-          registerSavedWorkflow(pi, opts.cwd ?? process.cwd(), saved, undefined, () =>
-            storage.list().some((w) => w.name === saved.name),
+          registerSavedWorkflow(
+            pi,
+            getCwd,
+            saved,
+            getManager,
+            // Always re-resolve storage at invocation — do not close over the
+            // instance from this save call, or a later project switch leaves
+            // the loader pointed at the source project's store.
+            () => getStorage()?.load(name) != null,
+            () => getStorage()?.load(name) ?? null,
           );
           ctx.ui.notify(`Saved /${name} (from ${run.runId})`, "info");
           return;

@@ -132,8 +132,18 @@ export interface WorkflowToolOptions {
   concurrency?: number;
   /** Shared manager so background runs are reachable from the `/workflows` command. */
   manager?: WorkflowManager;
+  /**
+   * Live manager accessor. Prefer this over a closed-over `manager` when the
+   * extension may replace the manager after session_start (cross-project resume).
+   * Falls back to `manager` / a freshly constructed default.
+   */
+  getManager?: () => WorkflowManager;
   /** Shared saved-workflow storage. */
   storage?: WorkflowStorage;
+  /** Live storage accessor; same rationale as getManager. */
+  getStorage?: () => WorkflowStorage;
+  /** Live project cwd for name-resolution / settings. */
+  getCwd?: () => string;
   /** Default per-agent timeout for runs created by this tool. null means no hard timeout. */
   defaultAgentTimeoutMs?: number | null;
   /** Default max concurrent agents when no tool-level concurrency is passed. */
@@ -143,18 +153,21 @@ export interface WorkflowToolOptions {
 }
 
 export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefinition<typeof workflowToolSchema, any> {
-  const storage = options.storage ?? createWorkflowStorage(options.cwd ?? process.cwd());
-  const cwd = options.cwd ?? process.cwd();
-  const defaults = resolveWorkflowToolDefaults(options, cwd);
-  const manager =
+  const fallbackCwd = options.cwd ?? process.cwd();
+  const fallbackStorage = options.storage ?? createWorkflowStorage(fallbackCwd);
+  const defaults = resolveWorkflowToolDefaults(options, fallbackCwd);
+  const fallbackManager =
     options.manager ??
     new WorkflowManager({
       cwd: options.cwd,
       concurrency: defaults.concurrency,
-      loadSavedWorkflow: (name: string) => storage.load(name)?.script,
+      loadSavedWorkflow: (name: string) => fallbackStorage.load(name)?.script,
       defaultAgentTimeoutMs: defaults.agentTimeoutMs,
       defaultAgentRetries: defaults.agentRetries,
     });
+  const getManager = () => options.getManager?.() ?? fallbackManager;
+  const getStorage = () => options.getStorage?.() ?? fallbackStorage;
+  const getCwd = () => options.getCwd?.() ?? fallbackCwd;
 
   return defineTool({
     name: "workflow",
@@ -171,6 +184,9 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       return normalizeWorkflowToolArgs(args);
     },
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      const manager = getManager();
+      const storage = getStorage();
+      const cwd = getCwd();
       // `name` resolves through the same registry the built-in slash commands
       // and saved-workflow commands use (see builtin-workflows.ts /
       // workflow-saved.ts): a project/user saved workflow of that name wins on

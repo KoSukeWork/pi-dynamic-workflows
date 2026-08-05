@@ -40,6 +40,14 @@ export interface ManagedRun {
    */
   background: boolean;
   /**
+   * Pi session that owned this run at start (or the session it was explicitly
+   * adopted into on an in-process session replacement). Frozen on the live
+   * object and written on every persist — never re-read from the manager's
+   * current sessionId, or a mid-flight setSessionId() would silently re-home
+   * the run and hide it from stranded-pause / the originating session's panel.
+   */
+  sessionId?: string;
+  /**
    * Auto-resume eligibility for this run (see ExecOptions.autoResume). Set once
    * at creation and carried through resume() so it survives pause/resume cycles.
    * Undefined means eligible (default-on); false opts out.
@@ -357,6 +365,40 @@ export class WorkflowManager extends EventEmitter {
     this.sessionId = id;
   }
 
+  /** Project cwd this manager was constructed for (persistence + agent tools). */
+  getCwd(): string {
+    return this.cwd;
+  }
+
+  /**
+   * Every live in-memory run, regardless of the navigator's session filter.
+   * Stranded-pause / cross-session recovery must use this — listRuns() hides
+   * runs whose frozen sessionId no longer matches the bound session.
+   */
+  listLiveRuns(): ManagedRun[] {
+    return [...this.runs.values()];
+  }
+
+  /**
+   * After an in-process session replacement keeps this manager, re-home every
+   * still-running (or paused-in-memory) run onto the new session so the panel,
+   * workflow_control, and a later stranded-pause all see them. Completed runs
+   * keep their original sessionId so history stays with the session that ran
+   * them. No-op when `sessionId` is undefined.
+   */
+  adoptLiveRunsToSession(sessionId: string | undefined): number {
+    if (!sessionId) return 0;
+    let adopted = 0;
+    for (const managed of this.runs.values()) {
+      if (managed.status !== "running" && managed.status !== "paused") continue;
+      if (managed.sessionId === sessionId) continue;
+      managed.sessionId = sessionId;
+      this.persistRun(managed);
+      adopted++;
+    }
+    return adopted;
+  }
+
   /**
    * On startup, any persisted run still marked "running" belongs to a process
    * that died mid-run (this fresh manager has it nowhere in memory). Reconcile it
@@ -458,6 +500,7 @@ export class WorkflowManager extends EventEmitter {
       args,
       journal: [],
       background: true,
+      sessionId: this.sessionId,
       lease,
       autoResume: exec.autoResume,
       // Resolve the budget once at start and freeze it on the run (see
@@ -484,7 +527,7 @@ export class WorkflowManager extends EventEmitter {
         workflowName: parsed.meta.name,
         script,
         args,
-        sessionId: this.sessionId,
+        sessionId: managed.sessionId,
         status: "running",
         phases: managed.snapshot.phases,
         agents: [],
@@ -573,6 +616,7 @@ export class WorkflowManager extends EventEmitter {
       args,
       journal: [],
       background: false,
+      sessionId: this.sessionId,
       agentTimestamps: new Map(),
       agentsById: new Map(),
     };
@@ -1049,7 +1093,10 @@ export class WorkflowManager extends EventEmitter {
         // in workflow run storage — protect via directory permissions, not blanking.
         script: managed.script,
         args: managed.args,
-        sessionId: this.sessionId,
+        // Always the run's own frozen owner — never this.sessionId. A mid-flight
+        // setSessionId() (session replacement) must not re-home a still-running
+        // run out from under stranded-pause / the originating panel.
+        sessionId: managed.sessionId,
         journal: keepsResumeJournal ? managed.journal : undefined,
         status: managed.status,
         // Persisted every write (not just at pause) so a stale read during the
@@ -1196,6 +1243,9 @@ export class WorkflowManager extends EventEmitter {
       args,
       journal: persisted.journal ?? [],
       background: true,
+      // Prefer the frozen owner on disk; fall back to the manager's current
+      // session only for legacy runs that predate per-run sessionId.
+      sessionId: persisted.sessionId ?? this.sessionId,
       lease,
       // Carry the original opt-out forward across resumes; it's fixed at
       // run-start and persistRun() re-persists it on every subsequent write.
