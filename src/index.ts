@@ -76,7 +76,14 @@ export {
 export { SharedStore } from "./shared-store.js";
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
-export { deliverText, installResultDelivery, installTaskPanel, type TaskPanelOptions } from "./task-panel.js";
+export {
+  deliverText,
+  installResultDelivery,
+  installTaskPanel,
+  resumeResultDelivery,
+  suspendResultDelivery,
+  type TaskPanelOptions,
+} from "./task-panel.js";
 export type {
   AutoResumeDelayParams,
   SchedulableWorkflowManager,

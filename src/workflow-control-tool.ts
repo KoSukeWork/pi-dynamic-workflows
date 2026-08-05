@@ -37,7 +37,9 @@ const workflowControlSchema = Type.Object(
 export type WorkflowControlInput = Static<typeof workflowControlSchema>;
 
 export interface WorkflowControlToolOptions {
-  manager: WorkflowManager;
+  manager?: WorkflowManager;
+  /** Live manager accessor; prefer over a closed-over manager when the extension may replace it. */
+  getManager?: () => WorkflowManager;
 }
 
 export interface WorkflowControlRunDetails {
@@ -65,7 +67,11 @@ type ControlResult = {
 export function createWorkflowControlTool(
   options: WorkflowControlToolOptions,
 ): ToolDefinition<typeof workflowControlSchema, Record<string, unknown>> {
-  const manager = options.manager;
+  const getManager = (): WorkflowManager => {
+    const m = options.getManager?.() ?? options.manager;
+    if (!m) throw new Error("workflow_control: no WorkflowManager configured");
+    return m;
+  };
   return defineTool({
     name: "workflow_control",
     label: "Workflow Control",
@@ -79,6 +85,7 @@ export function createWorkflowControlTool(
     parameters: workflowControlSchema,
     prepareArguments: normalizeInput,
     async execute(_toolCallId, params) {
+      const manager = getManager();
       if (params.action === "list") {
         const runs = manager.listRuns();
         const summaries = runs.map((run) => summarizeRun(run, manager.getSnapshot(run.runId)));

@@ -383,56 +383,81 @@ test("/workflows save <name> warns when no storage configured", async () => {
   assert.match(h.notified[0].message, /Saving is not available/);
 });
 
-test("/workflows save <name> saves the most recent run with a script", async () => {
-  const saved: Array<{ name: string; description: string; script: string }> = [];
-  const _h = harness({
-    listRuns: () => [
-      { runId: "old", workflowName: "old", status: "completed", script: null, agents: [], logs: [] },
-      {
-        runId: "recent",
-        workflowName: "scan",
-        status: "completed",
-        script: "export const meta = { name: 'scan', description: 'scan' }",
-        agents: [],
-        logs: [],
-      },
-    ],
-  });
-  // Register with storage mock
-  const storage: any = {
-    save: (w: any) => {
-      saved.push(w);
-      return { ...w, id: "saved-1" };
+test("/workflows save <name> saves the most recent run with a script and registers a live command", async () => {
+  const saved: Array<{ name: string; description?: string; script: string; location?: string }> = [];
+  const storage = {
+    save: (w: { name: string; description?: string; script: string; location?: string }) => {
+      const idx = saved.findIndex((s) => s.name === w.name);
+      if (idx >= 0) saved[idx] = w;
+      else saved.push(w);
+      return { ...w, id: "saved-1", path: `/tmp/${w.name}.json`, savedAt: "now" };
     },
+    load: (name: string) => saved.find((s) => s.name === name) ?? null,
+    list: () => saved,
   };
+
+  const runs = [
+    { runId: "old", workflowName: "old", status: "completed", script: null, agents: [], logs: [] },
+    {
+      runId: "recent",
+      workflowName: "scan",
+      status: "completed",
+      script: "export const meta = { name: 'scan', description: 'scan' }; export SCRIPT_V1",
+      agents: [],
+      logs: [],
+    },
+  ];
+
+  const started: string[] = [];
+  const manager = {
+    listRuns: () => runs,
+    getSnapshot: () => null,
+    getRun: () => undefined,
+    pause: () => false,
+    resume: async () => false,
+    stop: () => false,
+    deleteRun: () => false,
+    startInBackground: (script: string) => {
+      started.push(script);
+      return { runId: "bg-from-save", promise: new Promise(() => {}) };
+    },
+  } as unknown as WorkflowManager;
+
+  const commands: Array<{ name: string; handler: Handler; description?: string }> = [];
+  let workflowsHandler: Handler | undefined;
   registerWorkflowCommands(
     {
-      getCommands: () => [],
-      registerCommand: (_n: string, _o: any) => {},
+      getCommands: () => commands.map((c) => ({ name: c.name })),
+      registerCommand: (name: string, opts: { handler: Handler; description?: string }) => {
+        commands.push({ name, handler: opts.handler, description: opts.description });
+        if (name === "workflows") workflowsHandler = opts.handler;
+      },
       sendMessage: async () => {},
     } as unknown as ExtensionAPI,
-    {
-      listRuns: () => [
-        {
-          runId: "recent",
-          workflowName: "scan",
-          status: "completed",
-          script: "export const meta = { name: 'scan', description: 'scan' }",
-          agents: [],
-          logs: [],
-        },
-      ],
-      getSnapshot: () => null,
-      getRun: () => undefined,
-      pause: () => false,
-      resume: async () => false,
-      stop: () => false,
-      deleteRun: () => false,
-    } as unknown as WorkflowManager,
-    { storage },
+    manager,
+    { storage, cwd: "/cwd" },
   );
 
-  assert.equal(saved.length, 0);
+  assert.ok(workflowsHandler, "workflows command must register");
+  const notified: Array<{ message: string; type?: string }> = [];
+  await workflowsHandler("save my-scan", {
+    ui: { notify: (m: string, t?: string) => notified.push({ message: m, type: t }) },
+  });
+
+  assert.equal(saved.length, 1, "should persist one workflow");
+  assert.equal(saved[0].name, "my-scan");
+  assert.equal(saved[0].script, runs[1].script);
+  assert.ok(
+    notified.some((n) => n.message.includes("Saved") && n.message.includes("recent")),
+    "should notify Saved with the source run id",
+  );
+
+  const savedCmd = commands.find((c) => c.name === "my-scan");
+  assert.ok(savedCmd, "save must register /my-scan");
+  await savedCmd.handler("", {
+    ui: { notify: () => {}, setStatus: () => {} },
+  });
+  assert.deepEqual(started, [runs[1].script], "registered command must run via manager.startInBackground");
 });
 
 test("/workflows save <name> <runId> saves the specified run", async () => {

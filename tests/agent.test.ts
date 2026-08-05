@@ -444,10 +444,17 @@ test("WorkflowAgent.run(): an untagged agent's IMPLICIT default medium tier degr
     await withFakeHomeAsync(home, async () => {
       const tiersDir = join(home, ".pi", "workflows");
       mkdirSync(tiersDir, { recursive: true });
+      const agentDir = join(home, ".pi", "agent");
+      mkdirSync(agentDir, { recursive: true });
       // "medium" (the implicit default) resolves to a dead spec; the run must
-      // still complete by falling back to the session default (the only
-      // registered/available model here: fauxtest-implicit/faux-model).
+      // still complete by falling back to the configured session default.
+      // Pin it explicitly so provider credentials inherited from the test
+      // process cannot change which available model Pi selects by default.
       writeFileSync(join(tiersDir, "model-tiers.json"), JSON.stringify({ tiers: { medium: "deadprov/ghost-model" } }));
+      writeFileSync(
+        join(agentDir, "settings.json"),
+        JSON.stringify({ defaultProvider: "fauxtest-implicit", defaultModel: "faux-model" }),
+      );
 
       const runtime = await ModelRuntime.create({ authPath: join(home, "auth.json"), modelsPath: null });
       runtime.registerProvider("fauxtest-implicit", {
@@ -524,8 +531,11 @@ test("WorkflowAgent.run() still completes with a normal object schema (no regres
         fauxAssistantMessage(fauxToolCall("structured_output", { verdict: "ok" }), { stopReason: "toolUse" }),
       ]);
 
-      const agent = new WorkflowAgent({ cwd, modelRegistry: registry, mainModel: "fauxtest-schema/faux-model" });
-      const result = await agent.run("task", { schema: Type.Object({ verdict: Type.String() }) });
+      const agent = new WorkflowAgent({ cwd, modelRegistry: registry });
+      const result = await agent.run("task", {
+        model: "fauxtest-schema/faux-model",
+        schema: Type.Object({ verdict: Type.String() }),
+      });
 
       assert.deepEqual(result, { verdict: "ok" });
     });

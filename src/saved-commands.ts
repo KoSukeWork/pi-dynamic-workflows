@@ -55,46 +55,68 @@ export function parseCommandArgs(raw: string, parameters?: SavedWorkflow["parame
  * tell the user to reload rather than silently re-running a deleted workflow. */
 export function registerSavedWorkflow(
   pi: ExtensionAPI,
-  cwd: string,
-  wf: SavedWorkflow,
-  manager?: WorkflowManager,
+  cwd: string | (() => string),
+  wf: Pick<SavedWorkflow, "name" | "description" | "script" | "parameters">,
+  manager?: WorkflowManager | (() => WorkflowManager | undefined),
   exists?: () => boolean,
+  /**
+   * Live loader for this command's workflow. Prefer this over the registration-
+   * time `wf` snapshot: after an in-process project switch the same slash
+   * command name may resolve to a different script (or nothing) in the new
+   * project's storage. When omitted, `wf` is used as a frozen snapshot.
+   */
+  loadWorkflow?: () => Pick<SavedWorkflow, "name" | "description" | "script" | "parameters"> | null | undefined,
 ): void {
   if (isRegistered(pi, wf.name)) return;
+  const getCwd = typeof cwd === "function" ? cwd : () => cwd;
+  const getManager = typeof manager === "function" ? manager : () => manager;
   pi.registerCommand(wf.name, {
     description: wf.description || `Saved workflow: ${wf.name}`,
     async handler(args: string, ctx: ExtensionCommandContext) {
-      if (exists && !exists()) {
-        ctx.ui.notify(`/${wf.name} was deleted — reload the session to remove this command.`, "warning");
+      // Resolve the workflow at invocation time so a cross-project session
+      // switch picks up the target project's script (or reports deletion)
+      // instead of replaying the source project's registration-time snapshot.
+      const liveWf = loadWorkflow ? loadWorkflow() : exists && !exists() ? null : wf;
+      if (!liveWf) {
+        ctx.ui.notify(
+          `/${wf.name} is not available in this project — reload the session to drop the stale command.`,
+          "warning",
+        );
         return;
       }
       try {
-        if (manager) {
+        const liveManager = getManager();
+        if (liveManager) {
           // Run through the WorkflowManager's background path: the handler
           // returns immediately (awaiting the promise here would block the whole
           // session, #104), progress shows in the /workflows TUI and task panel,
           // and installResultDelivery posts the result back into the
           // conversation on completion — sending it here too would duplicate it.
-          const { runId } = manager.startInBackground(wf.script, parseCommandArgs(args, wf.parameters));
+          const { runId } = liveManager.startInBackground(liveWf.script, parseCommandArgs(args, liveWf.parameters));
           ctx.ui.notify(
-            `/${wf.name} running in the background (${runId}) — watch the task panel or /workflows; the result is posted here when it finishes.`,
+            `/${liveWf.name} running in the background (${runId}) — watch the task panel or /workflows; the result is posted here when it finishes.`,
             "info",
           );
           return;
         }
         // Fallback: inline runWorkflow (foreground, no TUI tracking, blocks).
-        ctx.ui.notify(`Starting /${wf.name}…`, "info");
-        const result = await runWorkflow(wf.script, {
-          cwd,
-          args: parseCommandArgs(args, wf.parameters),
-          tools: createCodingTools(cwd),
-          onPhase: (title) => ctx.ui.setStatus(`wf:${wf.name}`, `${wf.name}: ${title}`),
+        const liveCwd = getCwd();
+        ctx.ui.notify(`Starting /${liveWf.name}…`, "info");
+        const result = await runWorkflow(liveWf.script, {
+          cwd: liveCwd,
+          args: parseCommandArgs(args, liveWf.parameters),
+          tools: createCodingTools(liveCwd),
+          onPhase: (title) => ctx.ui.setStatus(`wf:${liveWf.name}`, `${liveWf.name}: ${title}`),
         });
-        ctx.ui.setStatus(`wf:${wf.name}`, undefined);
-        await pi.sendMessage({ customType: `workflow:${wf.name}`, content: reportText(result), display: true });
+        ctx.ui.setStatus(`wf:${liveWf.name}`, undefined);
+        await pi.sendMessage({
+          customType: `workflow:${liveWf.name}`,
+          content: reportText(result),
+          display: true,
+        });
       } catch (error) {
-        ctx.ui.setStatus(`wf:${wf.name}`, undefined);
-        ctx.ui.notify(`/${wf.name} failed: ${error instanceof Error ? error.message : error}`, "error");
+        ctx.ui.setStatus(`wf:${liveWf.name}`, undefined);
+        ctx.ui.notify(`/${liveWf.name} failed: ${error instanceof Error ? error.message : error}`, "error");
       }
     },
   });
@@ -102,14 +124,28 @@ export function registerSavedWorkflow(
 
 /** Register every saved workflow found in storage.
  * When a WorkflowManager is provided, workflows run through it (visible in
- * /workflows TUI, background execution, task panel). */
+ * /workflows TUI, background execution, task panel). Idempotent: names already
+ * registered (including from a previous project) are skipped at registration
+ * time, but each handler re-loads by name from the live storage so a later
+ * project switch executes the target project's script. Call again after a
+ * cross-project session_start to pick up target-only names. */
 export function registerAllSavedWorkflows(
   pi: ExtensionAPI,
-  cwd: string,
-  storage: WorkflowStorage,
-  manager?: WorkflowManager,
+  cwd: string | (() => string),
+  storage: WorkflowStorage | (() => WorkflowStorage),
+  manager?: WorkflowManager | (() => WorkflowManager | undefined),
 ): void {
-  for (const wf of storage.list()) {
-    registerSavedWorkflow(pi, cwd, wf, manager, () => storage.list().some((w) => w.name === wf.name));
+  const getStorage = typeof storage === "function" ? storage : () => storage;
+  const getCwd = typeof cwd === "function" ? cwd : () => cwd;
+  for (const wf of getStorage().list()) {
+    const name = wf.name;
+    registerSavedWorkflow(
+      pi,
+      getCwd,
+      wf,
+      manager,
+      () => getStorage().load(name) != null,
+      () => getStorage().load(name),
+    );
   }
 }
