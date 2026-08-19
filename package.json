@@ -1,6 +1,6 @@
 {
   "name": "@quintinshaw/pi-dynamic-workflows",
-  "version": "3.6.1",
+  "version": "3.6.2",
   "description": "Claude-Code-style dynamic workflows for Pi — fan a task out across 100s of subagents with real model routing, token/cost accounting, resume, git-worktree isolation, and an interactive /workflows TUI.",
   "type": "module",
   "main": "./dist/index.js",
@@ -64,7 +64,7 @@
   ],
   "pi": {
     "extensions": [
-      "extensions/workflow.ts"
+      "extensions/bootstrap.ts"
     ],
     "skills": [
       "skills/workflow-authoring",
