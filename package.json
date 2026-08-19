@@ -64,7 +64,7 @@
   ],
   "pi": {
     "extensions": [
-      "dist/bootstrap.js"
+      "extensions/bootstrap.ts"
     ],
     "skills": [
       "skills/workflow-authoring",
