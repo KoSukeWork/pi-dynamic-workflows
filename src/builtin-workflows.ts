@@ -1,22 +1,17 @@
 /**
- * Shared registry of the 5 curated built-in workflow patterns
- * (`deep-research`, `adversarial-review`, `code-review`, `multi-perspective`,
- * `codebase-audit`).
+ * Shared registry of the curated built-in workflow patterns
+ * (`adversarial-review`, `code-review`, `multi-perspective`, `codebase-audit`).
  *
  * This is the single place that turns a pattern's name + caller-supplied args
- * into a runnable script (and, where a pattern needs it, an exec context such
- * as web tools). Both entry points a model or user can reach a built-in
- * through — the `/deep-research`-style slash commands (builtin-commands.ts)
- * and the `workflow` tool's `name` input (workflow-tool.ts) — resolve through
- * this one registry, so the two paths can never drift apart and the
- * per-pattern generator scripts are written exactly once.
+ * into a runnable script. Both entry points a model or user can reach a built-in
+ * through — the slash commands (builtin-commands.ts) and the `workflow` tool's
+ * `name` input (workflow-tool.ts) — resolve through this one registry.
  */
 
-import { createCodingTools, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } from "./adversarial-review.js";
 import { generateCodeReviewWorkflow } from "./code-review.js";
-import { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "./deep-research.js";
-import { createWebTools } from "./web-tools.js";
+import { generateCodebaseAuditWorkflow } from "./deep-research.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
 
 /** Default perspective set used when a caller gives fewer than two. */
@@ -63,23 +58,8 @@ function requireStringArray(value: unknown, argName: string, patternName: string
   return value;
 }
 
-/** The 5 curated built-in workflow patterns, keyed by their stable name. */
+/** The curated built-in workflow patterns, keyed by their stable name. */
 export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflowDescriptor[] = [
-  {
-    name: "deep-research",
-    description: "Research a question across the web with cross-checked sources. args: { question: string }.",
-    resolve(cwd, args) {
-      requireNonEmptyString(asRecord(args).question, "question", "deep-research");
-      return {
-        script: generateDeepResearchWorkflow(),
-        // Research agents need real web access on top of the coding tools; the
-        // "web-research" tag is what a resumed run re-resolves (see
-        // WorkflowManagerOptions.toolsets).
-        tools: [...createCodingTools(cwd), ...createWebTools()],
-        toolset: "web-research",
-      };
-    },
-  },
   {
     name: "adversarial-review",
     description:

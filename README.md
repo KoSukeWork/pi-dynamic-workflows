@@ -123,7 +123,6 @@ The installed extension generates this compact index from its executable capabil
 ## Built-in workflows
 
 ```text
-/deep-research <question>   source-checked web research with citations
 /adversarial-review <task>  findings challenged by skeptical reviewers
 /multi-perspective "<topic>" [angle …]
                             independent angles followed by synthesis
@@ -143,13 +142,9 @@ The installed extension generates this compact index from its executable capabil
 
 For an always-on exhaustive mode, use `/ultracode`; `/effort high` is the lighter standing option.
 
-These same 5 patterns are also reachable by name without a slash command — Pi can recognize a decomposable request and run the matching curated pattern directly:
+These same patterns are also reachable by name without a slash command. A saved workflow always wins over a built-in of the same name, on both the slash-command and natural-language paths — so saving your own `code-review` shadows the built-in one everywhere.
 
-```text
-Do a deep-research on whether Bun's test runner is production-ready.
-```
-
-is equivalent to `/deep-research "..."`. A saved workflow always wins over a built-in of the same name, on both the slash-command and natural-language paths — so saving your own `code-review` shadows the built-in one everywhere.
+This certified fork does not ship `/deep-research` or a built-in `web_fetch`/`web_search` toolset. Use host `pi-web-access` in the parent session if you need the web.
 
 ## Commands and run control
 
@@ -313,7 +308,7 @@ Library API note: the unused `createSharedStoreTools` export was removed — use
 
 Two behavior changes to know about:
 
-- **Subagents no longer load host extensions by default.** Each run now builds one shared, extension-free resource loader for all of its subagents (a memory-leak mitigation). Skills, prompts, and `AGENTS.md` context still load, and the coding tools and any toolset (e.g. `web-research`) you hand a subagent are unaffected. What subagents lose is **host-extension-registered tools** — MCP bridges, browser tools, or anything else another installed extension adds. If an `agentType` names one of those tools in its allowlist, that entry now matches nothing. This also means a subagent can no longer recurse into another orchestration extension, even one not covered by the existing tool denylist.
+- **Subagents no longer load host extensions by default.** Each run now builds one shared, extension-free resource loader for all of its subagents (a memory-leak mitigation). Skills, prompts, and `AGENTS.md` context still load, and the coding tools you hand a subagent are unaffected. What subagents lose is **host-extension-registered tools** — MCP bridges, browser tools, or anything else another installed extension adds. If an `agentType` names one of those tools in its allowlist, that entry now matches nothing. This also means a subagent can no longer recurse into another orchestration extension, even one not covered by the existing tool denylist.
 - **Checkpoints persisted before this release re-run once.** `checkpoint()`'s resume-identity hash now also covers `default`, `headless`, and `timeoutMs`, so changing any of them between runs correctly invalidates a stale cached answer. This is a one-time effect: any checkpoint cached under the old hash simply re-prompts once and then caches normally again.
 
 ## Development

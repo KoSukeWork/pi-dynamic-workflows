@@ -1,6 +1,6 @@
 /**
  * Tests for the shared builtin-workflow registry (src/builtin-workflows.ts) —
- * the single resolution path the `/deep-research`-style slash commands
+ * the single resolution path the built-in slash commands
  * (builtin-commands.ts) and the `workflow` tool's `name` input
  * (workflow-tool.ts) both consult, so a pattern's generator script is written
  * exactly once and both entry points can never drift apart.
@@ -20,7 +20,7 @@ import {
   resolveWorkflowInvocation,
 } from "../src/builtin-workflows.js";
 import { generateCodeReviewWorkflow } from "../src/code-review.js";
-import { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "../src/deep-research.js";
+import { generateCodebaseAuditWorkflow } from "../src/deep-research.js";
 import { parseWorkflowScript } from "../src/workflow.js";
 import { createWorkflowStorage } from "../src/workflow-saved.js";
 
@@ -44,17 +44,16 @@ function withTempCwd(fn: (cwd: string) => void) {
 
 // ─── Registry shape ─────────────────────────────────────────────────────────────
 
-test("BUILTIN_WORKFLOW_NAMES lists exactly the 5 curated patterns", () => {
+test("BUILTIN_WORKFLOW_NAMES lists the curated coding patterns", () => {
   assert.deepEqual([...BUILTIN_WORKFLOW_NAMES].sort(), [
     "adversarial-review",
     "code-review",
     "codebase-audit",
-    "deep-research",
     "multi-perspective",
   ]);
 });
 
-test("findBuiltinWorkflow resolves each of the 5 names and rejects unknown names", () => {
+test("findBuiltinWorkflow resolves each curated name and rejects unknown names", () => {
   for (const name of BUILTIN_WORKFLOW_NAMES) {
     assert.ok(findBuiltinWorkflow(name), `${name} should be found`);
   }
@@ -62,28 +61,6 @@ test("findBuiltinWorkflow resolves each of the 5 names and rejects unknown names
 });
 
 // ─── Per-pattern resolve() ──────────────────────────────────────────────────────
-
-test(
-  "deep-research resolve() produces the real generator script and the web-research exec context",
-  withTempCwd((cwd) => {
-    const invocation = requireBuiltin("deep-research").resolve(cwd, { question: "what is pi?" });
-    assert.equal(invocation.script, generateDeepResearchWorkflow());
-    assert.equal(invocation.toolset, "web-research");
-    const tools = invocation.tools;
-    assert.ok(Array.isArray(tools) && tools.length > 0, "should carry an explicit tool set");
-    const toolNames = (tools ?? []).map((t) => t.name);
-    assert.ok(
-      toolNames.some((n) => /search|fetch|web/i.test(n)),
-      `expected web tools among: ${toolNames.join(", ")}`,
-    );
-  }),
-);
-
-test("deep-research resolve() rejects a missing/blank question", () => {
-  const resolve = requireBuiltin("deep-research").resolve;
-  assert.throws(() => resolve("/tmp", {}), /question/);
-  assert.throws(() => resolve("/tmp", { question: "   " }), /question/);
-});
 
 test("adversarial-review resolve() produces the real generator script with no special exec context", () => {
   const invocation = requireBuiltin("adversarial-review").resolve("/tmp", { task: "investigate this" });
@@ -147,10 +124,10 @@ test(
   "resolveWorkflowInvocation falls back to the built-in pattern when nothing is saved",
   withTempCwd((cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const resolved = resolveWorkflowInvocation("deep-research", { question: "q" }, { storage, cwd });
+    const resolved = resolveWorkflowInvocation("adversarial-review", { task: "t" }, { storage, cwd });
     assert.ok(resolved);
-    assert.equal(resolved.script, generateDeepResearchWorkflow());
-    assert.equal(resolved.toolset, "web-research");
+    assert.equal(resolved.script, generateAdversarialReviewWorkflow());
+    assert.equal(resolved.toolset, undefined);
   }),
 );
 
@@ -158,16 +135,14 @@ test(
   "resolveWorkflowInvocation prefers a project/user saved workflow over a built-in of the same name",
   withTempCwd((cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const customScript = "export const meta = { name: 'custom_deep_research', description: 'override' }\nreturn 1";
-    storage.save({ name: "deep-research", description: "custom override", script: customScript });
+    const customScript = "export const meta = { name: 'custom_adversarial_review', description: 'override' }\nreturn 1";
+    storage.save({ name: "adversarial-review", description: "custom override", script: customScript });
 
-    const resolved = resolveWorkflowInvocation("deep-research", { question: "q" }, { storage, cwd });
+    const resolved = resolveWorkflowInvocation("adversarial-review", { task: "t" }, { storage, cwd });
     assert.ok(resolved);
     assert.equal(resolved.script, customScript);
-    // The saved workflow wins outright — it does not carry the built-in's
-    // web-research exec context, since it is a wholly different script.
     assert.equal(resolved.toolset, undefined);
-    assert.equal(parseWorkflowScript(resolved.script).meta.name, "custom_deep_research");
+    assert.equal(parseWorkflowScript(resolved.script).meta.name, "custom_adversarial_review");
   }),
 );
 
@@ -183,7 +158,6 @@ test(
 
 test("every built-in pattern's resolve() output is a parseable workflow script", () => {
   const validArgsByName: Record<string, unknown> = {
-    "deep-research": { question: "q" },
     "adversarial-review": { task: "t" },
     "code-review": { diff: "d" },
     "multi-perspective": { topic: "t" },

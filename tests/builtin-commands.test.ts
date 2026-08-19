@@ -224,23 +224,21 @@ test("bare code-review stops cleanly when only generated artifacts changed", asy
   assert.match(notified[0].message, /review one explicitly/);
 });
 
-test("registerBuiltinWorkflows registers all five built-in workflow commands", () => {
+test("registerBuiltinWorkflows registers the curated built-in workflow commands", () => {
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
-  assert.equal(commands.length, 5);
+  assert.equal(commands.length, 4);
   const names = commands.map((c) => c.name).sort();
   assert.deepEqual(names, [
     "adversarial-review",
     "code-review",
     "codebase-audit",
-    "deep-research",
     "multi-perspective",
   ]);
 });
 
 test("registerBuiltinWorkflows is idempotent — skips already registered commands", () => {
   const { pi, commands } = makeCommandRegistryPi([
-    "deep-research",
     "adversarial-review",
     "multi-perspective",
     "codebase-audit",
@@ -251,27 +249,13 @@ test("registerBuiltinWorkflows is idempotent — skips already registered comman
 });
 
 test("registerBuiltinWorkflows registers only missing commands", () => {
-  const { pi, commands } = makeCommandRegistryPi(["deep-research", "adversarial-review"]);
+  const { pi, commands } = makeCommandRegistryPi(["adversarial-review"]);
   registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
   assert.deepEqual(
     commands.map((c) => c.name).sort(),
     ["code-review", "codebase-audit", "multi-perspective"],
     "should only register the commands that aren't already present",
   );
-});
-
-test("registerBuiltinWorkflows deep-research handler validates empty args (returns early)", async () => {
-  const { pi, commands } = makeCommandRegistryPi();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
-  const deepResearchHandler = commands.find((c) => c.name === "deep-research")?.handler;
-  assert.ok(deepResearchHandler, "deep-research handler should exist");
-
-  // Calling with empty args should warn and return early (before running any workflow)
-  const { ctx, notified } = makeNotifyCtx();
-  await deepResearchHandler("", ctx);
-  assert.equal(notified.length, 1, "should notify with warning");
-  assert.equal(notified[0].type, "warning", "should be a warning");
-  assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
 });
 
 test("registerBuiltinWorkflows adversarial-review handler validates empty args (returns early)", async () => {
@@ -334,28 +318,6 @@ test("built-in handlers start a background run and return immediately (#104)", a
   assert.ok(notified[0].message.includes("background"), "start notice should say it runs in the background");
 });
 
-test("deep-research passes web tools on top of coding tools to its run", async () => {
-  const { pi, commands } = makeCommandRegistryPi();
-  const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager });
-  const handler = commands.find((c) => c.name === "deep-research")?.handler;
-  assert.ok(handler);
-
-  const { ctx } = makeNotifyCtx();
-  await handler("what is pi?", ctx);
-
-  assert.equal(started.length, 1);
-  assert.deepEqual(started[0].args, { question: "what is pi?" });
-  assert.ok(Array.isArray(started[0].exec.tools), "deep-research must pass an explicit tool set");
-  const toolNames = (started[0].exec.tools as Array<{ name: string }>).map((t) => t.name);
-  assert.ok(
-    toolNames.some((n) => /search|fetch|web/i.test(n)),
-    `tool set should include web tools, got: ${toolNames.join(", ")}`,
-  );
-  // The persistable tag is what lets a resumed run re-resolve these tools.
-  assert.equal((started[0].exec as { toolset?: string }).toolset, "web-research");
-});
-
 test("startInBackground throwing synchronously surfaces as an error notify, not an unhandled throw", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const manager = {
@@ -377,11 +339,6 @@ test("startInBackground throwing synchronously surfaces as an error notify, not 
 test("registerBuiltinWorkflows creates handlers with expected structure", () => {
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
-
-  const deepResearchCmd = commands.find((c) => c.name === "deep-research");
-  assert.ok(deepResearchCmd, "deep-research should be registered");
-  assert.ok(deepResearchCmd.description?.includes("Research"), "should have research description");
-  assert.equal(typeof deepResearchCmd.handler, "function");
 
   const advReviewCmd = commands.find((c) => c.name === "adversarial-review");
   assert.ok(advReviewCmd, "adversarial-review should be registered");
@@ -409,14 +366,14 @@ test("registerBuiltinWorkflows creates handlers with expected structure", () => 
 test("a saved workflow shadows the built-in slash command of the same name", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
-  const customScript = "export const meta = { name: 'custom_deep_research', description: 'override' }\nreturn 1";
-  const storage = makeFakeStorage({ "deep-research": { script: customScript } });
+  const customScript = "export const meta = { name: 'custom_adversarial_review', description: 'override' }\nreturn 1";
+  const storage = makeFakeStorage({ "adversarial-review": { script: customScript } });
   registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage });
-  const handler = commands.find((c) => c.name === "deep-research")?.handler;
+  const handler = commands.find((c) => c.name === "adversarial-review")?.handler;
   assert.ok(handler);
 
   const { ctx, notified } = makeNotifyCtx();
-  await handler("what is pi?", ctx);
+  await handler("audit the error paths", ctx);
 
   assert.equal(started.length, 1, "should start exactly one run");
   assert.equal(started[0].script, customScript, "the saved script should run, not the built-in's");
@@ -445,20 +402,20 @@ test("a saved workflow shadow parses slash-command args the same way any saved w
   assert.deepEqual(started[0].args, { mode: "quick", _: "", _raw: "mode=quick" });
 });
 
-test("deep-research still runs the built-in when no saved workflow shadows it", async () => {
+test("adversarial-review still runs the built-in when no saved workflow shadows it", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
   const storage = makeFakeStorage({});
   registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage });
-  const handler = commands.find((c) => c.name === "deep-research")?.handler;
+  const handler = commands.find((c) => c.name === "adversarial-review")?.handler;
   assert.ok(handler);
 
   const { ctx } = makeNotifyCtx();
-  await handler("what is pi?", ctx);
+  await handler("audit the error paths", ctx);
 
   assert.equal(started.length, 1);
   const { meta } = parseWorkflowScript(started[0].script);
-  assert.equal(meta.name, "deep_research", "the built-in should run when nothing shadows it");
+  assert.equal(meta.name, "adversarial_review", "the built-in should run when nothing shadows it");
 });
 
 // ─── Validation drift: registry errors reach the user as a notify, not a throw ─

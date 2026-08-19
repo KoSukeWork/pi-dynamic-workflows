@@ -1,7 +1,7 @@
 import { closeSync, existsSync, openSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { createCodingTools, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   claimWorkflowRuntime,
   discardWorkflowRuntime,
@@ -14,7 +14,6 @@ import {
 import {
   bindSessionDelivery,
   createEffortState,
-  createWebTools,
   createWorkflowControlTool,
   createWorkflowStorage,
   createWorkflowTool,
@@ -95,9 +94,7 @@ function buildManagerOptions(cwd: string, storage: WorkflowStorage) {
   const settings = loadWorkflowSettings({ cwd });
   return {
     loadSavedWorkflow: (name: string) => storage.load(name)?.script,
-    toolsets: {
-      "web-research": () => [...createCodingTools(cwd), ...createWebTools()],
-    },
+    toolsets: {},
     excludeSubagentTools: settings.excludeSubagentTools,
     defaultAgentTimeoutMs: settings.defaultAgentTimeoutMs ?? null,
     defaultTokenBudget: settings.defaultTokenBudget ?? null,

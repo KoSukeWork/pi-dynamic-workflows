@@ -1,6 +1,6 @@
 /**
- * Bundled workflow commands: `/deep-research`, `/adversarial-review`,
- * `/multi-perspective`, `/code-review`, and `/codebase-audit`.
+ * Bundled workflow commands: `/adversarial-review`, `/multi-perspective`,
+ * `/code-review`, and `/codebase-audit`.
  *
  * Each command starts its generated workflow through the WorkflowManager's
  * background path — the command returns immediately, progress is visible in
@@ -374,33 +374,6 @@ export function registerBuiltinWorkflows(
     if (!saved) return false;
     startBackground(getManager(), ctx, name, saved.script, parseCommandArgs(rawArgs, saved.parameters));
     return true;
-  }
-
-  if (!alreadyRegistered(pi, "deep-research")) {
-    pi.registerCommand("deep-research", {
-      description: "Research a question across the web with cross-checked sources",
-      async handler(args: string, ctx: ExtensionCommandContext) {
-        if (runSavedShadowIfPresent("deep-research", args, ctx)) return;
-        const question = args.trim();
-        if (!question) return ctx.ui.notify("Usage: /deep-research <question>", "warning");
-        // Resolve through the shared builtin registry (builtin-workflows.ts) so
-        // this command and the workflow tool's `name` input always run the exact
-        // same generated script and exec context (tools/toolset) for this pattern.
-        const resolved = resolveBuiltinOrNotify("deep-research", getCwd(), { question }, ctx);
-        if (!resolved) return;
-        startBackground(
-          getManager(),
-          ctx,
-          "deep-research",
-          resolved.script,
-          { question },
-          {
-            tools: resolved.tools,
-            toolset: resolved.toolset,
-          },
-        );
-      },
-    });
   }
 
   if (!alreadyRegistered(pi, "adversarial-review")) {

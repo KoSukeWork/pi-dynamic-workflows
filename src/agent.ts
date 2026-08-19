@@ -578,7 +578,7 @@ export class WorkflowAgent {
    *
    * `noExtensions: true` skips loading host extensions; skills, prompts, and
    * AGENTS.md context still load. The subagent keeps the tools this workflow
-   * hands it via `customTools` (coding tools + any toolset like web-research) —
+   * hands it via `customTools` (coding tools + any optional toolset) —
    * those are unaffected. What it loses is HOST EXTENSION-REGISTERED tools (MCP
    * bridges, browser tools, anything a host extension added via ctx.registerTool):
    * pre-change a subagent session inherited those from the full host extension

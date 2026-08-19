@@ -9,8 +9,7 @@ export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } 
 export { registerBuiltinWorkflows } from "./builtin-commands.js";
 export { generateCodeReviewWorkflow, MAX_DIFF_CHARS } from "./code-review.js";
 export * from "./config.js";
-export type { DeepResearchConfig } from "./deep-research.js";
-export { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "./deep-research.js";
+export { generateCodebaseAuditWorkflow } from "./deep-research.js";
 export type {
   WorkflowAgentSnapshot,
   WorkflowAgentStatus,
@@ -95,7 +94,6 @@ export type {
   UsageLimitSchedulerOptions,
 } from "./usage-limit-scheduler.js";
 export { computeAutoResumeDelayMs, parseResetHintMs, UsageLimitScheduler } from "./usage-limit-scheduler.js";
-export { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-tools.js";
 export type {
   AgentOptions,
   JournalEntry,

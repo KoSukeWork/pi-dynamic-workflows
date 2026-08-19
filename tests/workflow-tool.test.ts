@@ -216,7 +216,7 @@ test("createWorkflowTool invalid args throws descriptive error", () => {
     assert.throws(() => prepare({}), /script.*name/i, "neither `script` nor `name` should throw clearly");
     // A malformed `script` alongside `name` must not be silently coerced away
     // — it should throw the same way a malformed script-only call does.
-    assert.throws(() => prepare({ name: "deep-research", script: 123 }), /script.*string/i);
+    assert.throws(() => prepare({ name: "adversarial-review", script: 123 }), /script.*string/i);
   }
 });
 
@@ -523,7 +523,6 @@ return { a, b, synthesis }`;
 // ─── `name`: reach a saved or built-in workflow without writing a script ───────
 
 const validArgsByBuiltinName: Record<string, unknown> = {
-  "deep-research": { question: "what is pi?" },
   "adversarial-review": { task: "investigate this" },
   "code-review": { diff: "some diff" },
   "multi-perspective": { topic: "a topic" },
@@ -531,7 +530,7 @@ const validArgsByBuiltinName: Record<string, unknown> = {
 };
 
 test(
-  "workflow tool: `name` resolves each of the 5 built-in patterns and starts a run",
+  "workflow tool: `name` resolves each curated built-in pattern and starts a run",
   withToolTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: toolFakeAgent("ok") });
     manager.on("error", () => {});
@@ -558,40 +557,18 @@ test(
 );
 
 test(
-  "workflow tool: `name` carries deep-research's web-research exec context through the run",
-  withToolTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: toolFakeAgent("ok") });
-    manager.on("error", () => {});
-    const tool = createWorkflowTool({ cwd, manager });
-    const res = await tool.execute(
-      "name-deep-research",
-      { name: "deep-research", args: { question: "what is pi?" } },
-      undefined,
-      undefined,
-      undefined,
-    );
-    const details = res.details as { runId?: string };
-    const runId = details.runId;
-    assert.ok(runId, "deep-research should start a run");
-    const managed = manager.getRun(runId);
-    assert.equal(managed?.toolset, "web-research", "the run should carry the web-research toolset tag");
-    await new Promise((r) => setTimeout(r, 50));
-  }),
-);
-
-test(
   "workflow tool: a saved workflow of the same name takes precedence over a built-in",
   withToolTempCwd(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const customScript = "export const meta = { name: 'custom_deep_research', description: 'override' }\nreturn 1";
-    storage.save({ name: "deep-research", description: "custom override", script: customScript });
+    const customScript = "export const meta = { name: 'custom_adversarial_review', description: 'override' }\nreturn 1";
+    storage.save({ name: "adversarial-review", description: "custom override", script: customScript });
     const manager = new WorkflowManager({ cwd, agent: toolFakeAgent("ok") });
     manager.on("error", () => {});
     const tool = createWorkflowTool({ cwd, manager, storage });
 
     const res = await tool.execute(
       "name-precedence",
-      { name: "deep-research", args: { question: "irrelevant here" } },
+      { name: "adversarial-review", args: { task: "irrelevant here" } },
       undefined,
       undefined,
       undefined,
@@ -600,7 +577,7 @@ test(
     const runId = details.runId;
     assert.ok(runId, "the run should start");
     const managed = manager.getRun(runId);
-    assert.equal(managed?.snapshot.name, "custom_deep_research", "the saved workflow should win, not the built-in");
+    assert.equal(managed?.snapshot.name, "custom_adversarial_review", "the saved workflow should win, not the built-in");
     assert.equal(managed?.toolset, undefined, "the saved workflow does not carry the built-in's exec context");
     await new Promise((r) => setTimeout(r, 50));
   }),
@@ -624,8 +601,8 @@ test(
     const manager = new WorkflowManager({ cwd, agent: toolFakeAgent("ok") });
     const tool = createWorkflowTool({ cwd, manager });
     await assert.rejects(
-      () => tool.execute("bad-args", { name: "deep-research", args: {} }, undefined, undefined, undefined),
-      /question/,
+      () => tool.execute("bad-args", { name: "adversarial-review", args: {} }, undefined, undefined, undefined),
+      /task/,
     );
   }),
 );
@@ -639,7 +616,7 @@ test(
       () =>
         tool.execute(
           "bad-combo",
-          { name: "deep-research", args: { question: "q" }, resumeFromRunId: "some-run" },
+          { name: "adversarial-review", args: { task: "t" }, resumeFromRunId: "some-run" },
           undefined,
           undefined,
           undefined,
