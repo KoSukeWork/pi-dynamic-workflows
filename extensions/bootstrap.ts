@@ -1,5 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { installDeliverySteal } from "../src/delivery-steal.js";
 import { installDeferred } from "./lazy-extension.js";
+
+// Prototype patch must land before Pi's AgentSession._bindExtensionCore.
+installDeliverySteal();
 
 export default function (pi: ExtensionAPI) {
 	installDeferred(pi, () => import("./workflow.js"), {

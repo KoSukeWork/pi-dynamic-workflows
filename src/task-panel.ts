@@ -8,12 +8,21 @@
 
 import { join } from "node:path";
 import {
-  AgentSession,
   type ExtensionAPI,
-  ExtensionRunner,
   type ExtensionUIContext,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
+import {
+  type DeliverySend,
+  clearBoundSessionSends,
+  deleteBoundSessionSend,
+  hasBoundSessionSend,
+  installDeliverySteal,
+  patchAgentSessionCapture,
+  patchBindCoreObserve,
+  recaptureHostSessionSend,
+  setBoundSessionSend,
+} from "./delivery-steal.js";
 import { type Component, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
   aggregateAgentUsage,
@@ -165,11 +174,6 @@ function deliveredMaxChars(opts: { loadSettings?: () => WorkflowSettings }): num
  * and never ACK on a durable append (that writes history without triggerTurn).
  */
 
-type DeliverySend = (
-  message: { customType: string; content: string; display: boolean },
-  options: { triggerTurn: boolean; deliverAs: "followUp" },
-) => unknown;
-
 interface SessionDeliveryEndpoint {
   sessionId: string;
   /**
@@ -198,111 +202,10 @@ interface SessionDeliveryEndpoint {
 /** Process-wide: one live endpoint per pi session id. */
 const sessionEndpoints = new Map<string, SessionDeliveryEndpoint>();
 
-/**
- * Session-stable thenable sends (host AgentSession.sendCustomMessage). Keyed
- * by host sessionId only — workflow children (in-memory, noExtensions, or
- * named `workflow:…`) must never enter this map (#109).
- */
-const boundSessionSends = new Map<string, DeliverySend>();
-
 /** runIds with an in-flight deliver-and-ack so bind flush does not double-send. */
 const inFlightDeliveries = new Set<string>();
 
-let agentSessionPatched = false;
-let bindCoreObserved = false;
-
-interface StealCandidate {
-  sendCustomMessage?: DeliverySend;
-  sessionManager?: {
-    persist?: boolean;
-    getSessionId?: () => string;
-    getSessionName?: () => string | undefined;
-  };
-  _resourceLoader?: { noExtensions?: boolean };
-}
-
-/**
- * Host Pi session only. Child workflow agents must not be pinned:
- *  - SessionManager.inMemory() → persist === false
- *  - shared noExtensions loader (persistAgentSessions children included)
- *  - persisted children named `workflow:<runId> …` (set after construction;
- *    still filters a later re-bindCore)
- */
-function hostSessionIdToSteal(session: StealCandidate): string | undefined {
-  const sm = session.sessionManager;
-  if (!sm) return undefined;
-  if (sm.persist === false) return undefined;
-  if (session._resourceLoader?.noExtensions === true) return undefined;
-  try {
-    const name = sm.getSessionName?.();
-    if (typeof name === "string" && name.startsWith("workflow:")) return undefined;
-  } catch {
-    // getSessionName unavailable — keep evaluating
-  }
-  if (typeof session.sendCustomMessage !== "function") return undefined;
-  try {
-    const sid = sm.getSessionId?.();
-    if (typeof sid === "string" && sid) return sid;
-  } catch {
-    return undefined;
-  }
-  return undefined;
-}
-
-function captureHostSessionSend(session: StealCandidate): void {
-  const sid = hostSessionIdToSteal(session);
-  if (!sid) return;
-  boundSessionSends.set(sid, (message, options) => session.sendCustomMessage!(message, options));
-}
-
-/**
- * Capture a Promise-returning send from the *host* AgentSession. bindCore's
- * `actions.sendMessage` is fire-and-forget (void + swallowed reject) and must
- * not be treated as an ACK channel. Child sessions never enter the map.
- */
-function patchAgentSessionCapture(): void {
-  if (agentSessionPatched) return;
-  agentSessionPatched = true;
-  try {
-    const proto = AgentSession.prototype as unknown as {
-      _bindExtensionCore?: (runner: unknown) => unknown;
-    } & StealCandidate;
-    const original = proto._bindExtensionCore;
-    if (typeof original !== "function") return;
-    proto._bindExtensionCore = function patchedBindExtensionCore(this: StealCandidate, runner: unknown) {
-      try {
-        captureHostSessionSend(this);
-      } catch {
-        // never break session construction
-      }
-      return original.apply(this, [runner]);
-    };
-  } catch {
-    // AgentSession unavailable or shape changed — bind stays fail-closed without steal
-  }
-}
-
-/** Keep ExtensionRunner observed so module load order cannot skip the patch arm. */
-function patchBindCoreObserve(): void {
-  if (bindCoreObserved) return;
-  bindCoreObserved = true;
-  try {
-    const proto = ExtensionRunner.prototype as unknown as {
-      bindCore: (...args: unknown[]) => unknown;
-    };
-    const original = proto.bindCore;
-    if (typeof original !== "function") return;
-    // No capture of void actions.sendMessage — that path is not an ACK.
-    proto.bindCore = function patchedBindCore(this: unknown, ...args: unknown[]) {
-      return original.apply(this, args);
-    };
-  } catch {
-    // ignore
-  }
-}
-
-patchAgentSessionCapture();
-patchBindCoreObserve();
+installDeliverySteal();
 
 type DeliveryManager = WorkflowManager & {
   __deliveryInstalled?: boolean;
@@ -564,7 +467,7 @@ export function bindSessionDelivery(
   patchAgentSessionCapture();
   patchBindCoreObserve();
 
-  const stolen = opts.stableSend ?? boundSessionSends.get(sessionId);
+  const stolen = opts.stableSend ?? recaptureHostSessionSend(sessionId);
 
   if (!stolen) {
     console.warn(
@@ -616,7 +519,7 @@ export function suspendSessionDelivery(sessionId: string | undefined): void {
 export function dropSessionDelivery(sessionId: string | undefined): void {
   if (!sessionId) return;
   sessionEndpoints.delete(sessionId);
-  boundSessionSends.delete(sessionId);
+  deleteBoundSessionSend(sessionId);
 }
 
 /**
@@ -791,18 +694,18 @@ export function installResultDelivery(
 /** @internal test helper — reset process-wide delivery registries between cases. */
 export function _resetDeliveryRegistriesForTests(): void {
   sessionEndpoints.clear();
-  boundSessionSends.clear();
+  clearBoundSessionSends();
   inFlightDeliveries.clear();
 }
 
 /** @internal test helper — register a thenable session-stable send (steal map). */
 export function _registerBoundSessionSendForTests(sessionId: string, send: DeliverySend): void {
-  boundSessionSends.set(sessionId, send);
+  setBoundSessionSend(sessionId, send);
 }
 
 /** @internal test helper — whether the steal map holds a send for this session. */
 export function _hasBoundSessionSendForTests(sessionId: string): boolean {
-  return boundSessionSends.has(sessionId);
+  return hasBoundSessionSend(sessionId);
 }
 
 /** @internal test helper — inspect endpoint suspended flag. */
