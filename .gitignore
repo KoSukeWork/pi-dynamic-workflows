@@ -1,5 +1,5 @@
 node_modules/
-dist/
+dist/*
 .pi/
 .env
 .DS_Store
@@ -12,3 +12,7 @@ scripts/verify-npm-install.sh
 __pycache__/
 .context/
 .auto/
+
+# Keep compiled extension entrypoints (git install has no build step)
+!dist/*.js
+!**/dist/*.js
