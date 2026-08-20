@@ -8,7 +8,11 @@ installDeliverySteal();
 export default function (pi: ExtensionAPI) {
 	installDeferred(pi, () => import("./workflow.js"), {
 		commands: [
-			{ name: "workflows", description: "List and manage dynamic workflows" },
+			{
+				name: "workflows",
+				description: "List and manage dynamic workflows",
+				completions: ["run", "status", "stop", "pause", "resume", "rm", "save", "list"],
+			},
 			{ name: "workflows-models", description: "Configure workflow model routing" },
 			{ name: "workflows-progress", description: "Show workflow progress" },
 			{ name: "workflows-trigger", description: "Enable or disable the workflow keyword trigger" },
