@@ -6,8 +6,10 @@ import {
   type CreateAgentSessionOptions,
   createAgentSession,
   createCodingTools,
+  DefaultPackageManager,
   DefaultResourceLoader,
   getAgentDir,
+  type LoadExtensionsResult,
   ModelRegistry,
   ModelRuntime,
   SessionManager,
@@ -202,6 +204,41 @@ export function resolveAgentModelSpec(
   return undefined;
 }
 
+/** Child sessions load no host extensions unless explicitly opted in. */
+export const DEFAULT_PROVIDER_MIDDLEWARE_EXTENSIONS: readonly string[] = Object.freeze([]);
+const RECURSIVE_SUBAGENT_EXTENSION_NAMES = new Set(["pi-dynamic-workflows", "workflow", "pi-subagents"]);
+
+export function isProviderMiddlewareExtensionPath(
+  extensionPath: string,
+  allowlist: readonly string[],
+  packageSource?: string,
+): boolean {
+  const allowed = new Set(allowlist.map((name) => name.trim().toLowerCase()).filter(Boolean));
+  const segments = extensionPath.replaceAll("\\", "/").split("/").filter(Boolean).map((segment) => segment.toLowerCase());
+  const file = segments.at(-1)?.replace(/\.(?:[cm]?[jt]s)$/i, "");
+  if ([...segments, file ?? ""].some((name) => RECURSIVE_SUBAGENT_EXTENSION_NAMES.has(name))) return false;
+  const identities = new Set(file ? [file] : []);
+  const moduleIndex = segments.lastIndexOf("node_modules");
+  const packageName = segments[moduleIndex + 1];
+  if (moduleIndex >= 0 && packageName) identities.add(packageName.startsWith("@") ? `${packageName}/${segments[moduleIndex + 2] ?? ""}` : packageName);
+  if (packageSource) {
+    const source = packageSource.replaceAll("\\", "/").toLowerCase();
+    const npmName = /^npm:((?:@[^/]+\/)?[^@]+)(?:@.*)?$/.exec(source)?.[1];
+    const sourceName = npmName ?? source.replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").at(-1)?.replace(/\.git$/, "");
+    if (sourceName) identities.add(sourceName);
+  }
+  if ([...identities].some((name) => RECURSIVE_SUBAGENT_EXTENSION_NAMES.has(name))) return false;
+  return [...identities].some((name) => allowed.has(name));
+}
+
+export function filterProviderMiddlewareExtensions(
+  base: LoadExtensionsResult,
+  allowlist: readonly string[],
+  packageSources: ReadonlyMap<string, string> = new Map(),
+): LoadExtensionsResult {
+  return { ...base, extensions: base.extensions.filter((extension) => isProviderMiddlewareExtensionPath(extension.path, allowlist, packageSources.get(extension.path))) };
+}
+
 export interface WorkflowAgentOptions {
   cwd?: string;
   /** Extra tools available to the subagent in addition to the structured output tool. */
@@ -213,6 +250,8 @@ export interface WorkflowAgentOptions {
    * so a workflow subagent can't fan out through them either (#107).
    */
   excludeTools?: string[];
+  /** Trusted provider/auth middleware extension names allowed in child sessions. */
+  providerMiddlewareExtensions?: string[];
   /** Override any createAgentSession option (model, modelRuntime, resourceLoader, etc.). */
   session?: Partial<CreateAgentSessionOptions>;
   /** Extra system guidance prepended to every subagent task. */
@@ -406,6 +445,10 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * sessions or when an explicit session.sessionManager override is injected.
    */
   sessionName?: string;
+  /** Reuse a stable child session manager for sequential turns. */
+  thread?: string;
+  /** Receives the child session identity immediately after creation. */
+  onSessionCreated?: (info: { sessionId: string; sessionFile?: string }) => void;
   schema?: TSchemaDef;
   tools?: ToolDefinition[];
   instructions?: string;
@@ -525,6 +568,7 @@ export class WorkflowAgent {
   private readonly baseTools: ToolDefinition[];
   /** Extra subagent tool-name denylist, merged with the always-on defaults. */
   private readonly excludeTools: string[];
+  private readonly providerMiddlewareExtensions: readonly string[];
   private readonly sessionOptions: Partial<CreateAgentSessionOptions>;
   private readonly persistAgentSessions: boolean;
   private readonly instructions?: string;
@@ -544,6 +588,7 @@ export class WorkflowAgent {
    * getSharedResourceLoader — this is the #109 memory mitigation.
    */
   private readonly resourceLoaders = new Map<string, Promise<DefaultResourceLoader>>();
+  private readonly threadManagers = new Map<string, SessionManager>();
   /**
    * Emitted at most once per instance (~= once per run, see the class-level
    * lifetime note above): the untagged/default "medium" tier resolved to a
@@ -558,6 +603,7 @@ export class WorkflowAgent {
     this.cwd = options.cwd ?? process.cwd();
     this.baseTools = options.tools ?? createCodingTools(this.cwd);
     this.excludeTools = options.excludeTools ?? [];
+    this.providerMiddlewareExtensions = [...(options.providerMiddlewareExtensions ?? DEFAULT_PROVIDER_MIDDLEWARE_EXTENSIONS)];
     this.sessionOptions = options.session ?? {};
     this.persistAgentSessions = options.persistAgentSessions ?? false;
     this.instructions = options.instructions;
@@ -621,12 +667,31 @@ export class WorkflowAgent {
   }
 
   private buildSharedResourceLoader(agentDir: string, cwd: string, key: string): Promise<DefaultResourceLoader> {
+    const shared = this.providerMiddlewareExtensions.length === 0;
     const pending = (async () => {
+      const settingsManager = this.sessionOptions.settingsManager ?? SettingsManager.create(cwd, agentDir);
+      let middlewarePaths: string[] = [];
+      const packageSources = new Map<string, string>();
+      if (this.providerMiddlewareExtensions.length > 0) {
+        await settingsManager.reload();
+        const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
+        const configured = await packageManager.resolve();
+        middlewarePaths = configured.extensions
+          .filter((extension) => extension.enabled)
+          .filter((extension) => {
+            const source = extension.metadata.origin === "package" ? extension.metadata.source : undefined;
+            if (source) packageSources.set(extension.path, source);
+            return isProviderMiddlewareExtensionPath(extension.path, this.providerMiddlewareExtensions, source);
+          })
+          .map((extension) => extension.path);
+      }
       const loader = new DefaultResourceLoader({
         cwd,
         agentDir,
-        settingsManager: this.sessionOptions.settingsManager ?? SettingsManager.create(cwd, agentDir),
+        settingsManager,
         noExtensions: true,
+        additionalExtensionPaths: middlewarePaths,
+        extensionsOverride: (base) => filterProviderMiddlewareExtensions(base, this.providerMiddlewareExtensions, packageSources),
       });
       await loader.reload();
       return loader;
@@ -636,11 +701,13 @@ export class WorkflowAgent {
       // so the next caller rebuilds instead of replaying the same rejection.
       // Identity-checked: an older failed build must not delete a NEWER
       // healthy pending entry for the same key (the map is LRU-evictable).
-      if (this.resourceLoaders.get(key) === pending) this.resourceLoaders.delete(key);
+      if (shared && this.resourceLoaders.get(key) === pending) this.resourceLoaders.delete(key);
       throw err;
     });
-    this.resourceLoaders.set(key, pending);
-    this.pruneSharedResourceLoaders();
+    if (shared) {
+      this.resourceLoaders.set(key, pending);
+      this.pruneSharedResourceLoaders();
+    }
     return pending;
   }
 
@@ -708,12 +775,21 @@ export class WorkflowAgent {
    * agent to an in-memory session instead — the run continues, just without a
    * persisted transcript.
    */
-  private createSessionManager(): SessionManager {
-    if (!this.persistAgentSessions) return SessionManager.inMemory();
+  private createSessionManager(thread?: string, cwd = this.cwd): SessionManager {
+    if (thread) {
+      const existing = this.threadManagers.get(thread);
+      if (existing) return existing;
+    }
+    if (!this.persistAgentSessions) {
+      const manager = SessionManager.inMemory();
+      if (thread) this.threadManagers.set(thread, manager);
+      return manager;
+    }
     try {
-      const manager = SessionManager.create(this.cwd);
+      const manager = SessionManager.create(cwd);
       this.assertSessionDirWritable(manager.getSessionDir());
       warnPersistSecretsOnce(manager.getSessionDir());
+      if (thread) this.threadManagers.set(thread, manager);
       return manager;
     } catch (error) {
       console.warn(
@@ -721,7 +797,9 @@ export class WorkflowAgent {
           error instanceof Error ? error.message : String(error)
         }); continuing with an in-memory session`,
       );
-      return SessionManager.inMemory();
+      const manager = SessionManager.inMemory();
+      if (thread) this.threadManagers.set(thread, manager);
+      return manager;
     }
   }
 
@@ -842,7 +920,15 @@ export class WorkflowAgent {
     // per-call runCwd: agents working in short-lived git worktrees should still
     // group under the project's session dir instead of scattering across
     // temporary worktree paths.
-    const sessionManager = this.createSessionManager();
+    const sessionManager = this.createSessionManager(options.thread, runCwd);
+    try {
+      options.onSessionCreated?.({
+        sessionId: sessionManager.getSessionId(),
+        ...(sessionManager.isPersisted() ? { sessionFile: sessionManager.getSessionFile() } : {}),
+      });
+    } catch {
+      // Identity reporting is diagnostic and must not fail the agent.
+    }
     const { session } = await createAgentSession({
       cwd: runCwd,
       agentDir,
@@ -871,6 +957,26 @@ export class WorkflowAgent {
       // the caller set on sessionOptions rather than dropping it.
       excludeTools: subagentExcludedTools(this.excludeTools, this.sessionOptions.excludeTools),
     });
+
+    // Bind explicitly supplied provider middleware before the first prompt.
+    // The SDK does not automatically bind extensions on a caller-owned loader.
+    try {
+      const bindExtensions = (session as unknown as { bindExtensions?: (options: Record<string, unknown>) => Promise<void> }).bindExtensions;
+      if (bindExtensions) await bindExtensions.call(session, {});
+    } catch (error) {
+      session.dispose();
+      throw error;
+    }
+    const disposeSession = async (): Promise<void> => {
+      try {
+        const runner = (session as unknown as { extensionRunner?: { emit?: (event: unknown) => Promise<void> } }).extensionRunner;
+        await runner?.emit?.({ type: "session_shutdown", reason: "quit" });
+      } catch {
+        // Cleanup must not mask the agent result or failure.
+      } finally {
+        session.dispose();
+      }
+    };
 
     // Name the persisted session so it's identifiable in session pickers.
     // Skip when an injected session.sessionManager override won (tests/embedders).
@@ -949,7 +1055,7 @@ export class WorkflowAgent {
           // Usage is best-effort; never let stats failure mask the real result/error.
         }
       }
-      session.dispose();
+      await disposeSession();
     }
   }
 

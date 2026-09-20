@@ -239,6 +239,8 @@ export interface WorkflowManagerOptions {
    * other recursive-orchestration tools (#107).
    */
   excludeSubagentTools?: string[];
+  /** Trusted provider/auth middleware extension names allowed in children. Default []. */
+  providerMiddlewareExtensions?: string[];
   /**
    * Persist each subagent transcript as a real pi session file under the
    * standard sessions directory. Default false (in-memory, discarded).
@@ -266,6 +268,7 @@ export type WorkflowManagerReloadOptions = Pick<
   | "defaultTokenBudget"
   | "toolsets"
   | "excludeSubagentTools"
+  | "providerMiddlewareExtensions"
   | "persistAgentSessions"
 >;
 
@@ -360,6 +363,7 @@ export class WorkflowManager extends EventEmitter {
   private defaultTokenBudget: number | null;
   private toolsets?: Record<string, () => ToolDefinition[]>;
   private excludeSubagentTools?: string[];
+  private providerMiddlewareExtensions?: string[];
   private persistAgentSessions: boolean;
 
   constructor(options: WorkflowManagerOptions = {}) {
@@ -376,6 +380,7 @@ export class WorkflowManager extends EventEmitter {
     this.defaultTokenBudget = options.defaultTokenBudget ?? null;
     this.toolsets = options.toolsets;
     this.excludeSubagentTools = options.excludeSubagentTools;
+    this.providerMiddlewareExtensions = options.providerMiddlewareExtensions;
     this.persistAgentSessions = options.persistAgentSessions ?? false;
     this.maxTerminalRunsInMemory = options.maxTerminalRunsInMemory ?? DEFAULT_MAX_TERMINAL_RUNS_IN_MEMORY;
     this.persistence = createRunPersistence(this.cwd);
@@ -487,6 +492,7 @@ export class WorkflowManager extends EventEmitter {
     this.defaultTokenBudget = options.defaultTokenBudget ?? null;
     this.toolsets = options.toolsets;
     this.excludeSubagentTools = options.excludeSubagentTools;
+    this.providerMiddlewareExtensions = options.providerMiddlewareExtensions;
     this.persistAgentSessions = options.persistAgentSessions ?? false;
   }
 
@@ -752,6 +758,7 @@ export class WorkflowManager extends EventEmitter {
         tokenBudget: resolvedTokenBudget,
         tools: resolvedTools,
         excludeTools: this.excludeSubagentTools,
+        providerMiddlewareExtensions: this.providerMiddlewareExtensions,
         confirm,
         loadSavedWorkflow: this.loadSavedWorkflow,
         resumeJournal,
