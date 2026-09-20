@@ -16,6 +16,7 @@ import {
   type RunLease,
   type RunPersistence,
   type RunStatus,
+  sanitizeAutoResumeAttempts,
 } from "./run-persistence.js";
 import { type JournalEntry, parseWorkflowScript, runWorkflow, type WorkflowRunResult } from "./workflow.js";
 
@@ -73,6 +74,8 @@ export interface ManagedRun {
    * Undefined means eligible (default-on); false opts out.
    */
   autoResume?: boolean;
+  /** Usage-limit scheduler attempt counter, persisted across manager writes. */
+  autoResumeAttempts?: number;
   /**
    * The run's resolved hard token budget (per-run value, else the manager
    * default), fixed at run start and carried through resume() — a resumed run
@@ -551,6 +554,7 @@ export class WorkflowManager extends EventEmitter {
       sessionId: this.sessionId,
       lease,
       autoResume: exec.autoResume,
+      autoResumeAttempts: 0,
       // Resolve the budget once at start and freeze it on the run (see
       // ManagedRun.tokenBudget) so resume keeps start-time semantics.
       tokenBudget: exec.tokenBudget !== undefined ? exec.tokenBudget : this.defaultTokenBudget,
@@ -583,6 +587,7 @@ export class WorkflowManager extends EventEmitter {
         startedAt: managed.startedAt.toISOString(),
         updatedAt: managed.startedAt.toISOString(),
         autoResume: managed.autoResume,
+        autoResumeAttempts: managed.autoResumeAttempts,
         tokenBudget: managed.tokenBudget,
         toolset: managed.toolset,
         maxAgents: managed.maxAgents,
@@ -619,6 +624,7 @@ export class WorkflowManager extends EventEmitter {
     if (!lease) throw new Error(`Could not acquire workflow run lease for ${managed.runId}`);
     managed.lease = lease;
     managed.autoResume = exec.autoResume;
+    managed.autoResumeAttempts = 0;
     managed.tokenBudget = exec.tokenBudget !== undefined ? exec.tokenBudget : this.defaultTokenBudget;
     managed.toolset = exec.toolset;
     // Same freeze-at-start pattern as tokenBudget (see startInBackground/ManagedRun).
@@ -1150,6 +1156,7 @@ export class WorkflowManager extends EventEmitter {
         // "paused" event race (see UsageLimitScheduler) is still correct — this
         // is fixed at run-start and doesn't change over the run's lifetime.
         autoResume: managed.autoResume,
+        autoResumeAttempts: managed.autoResumeAttempts,
         // Start-time execution context, re-read by resume() (see ManagedRun).
         tokenBudget: managed.tokenBudget,
         toolset: managed.toolset,
@@ -1319,6 +1326,7 @@ export class WorkflowManager extends EventEmitter {
       // Carry the original opt-out forward across resumes; it's fixed at
       // run-start and persistRun() re-persists it on every subsequent write.
       autoResume: persisted.autoResume,
+      autoResumeAttempts: sanitizeAutoResumeAttempts(persisted.autoResumeAttempts),
       // Restore start-time execution context: the budget the run started with
       // (legacy runs without one resume unbudgeted — never re-apply the current
       // default to a run that predates it) and the toolset tag executeRun
@@ -1520,6 +1528,39 @@ export class WorkflowManager extends EventEmitter {
   /**
    * Get the persistence layer (for saving workflows).
    */
+  recordAutoResumeAttempts(runId: string, attempts: number): void {
+    // A corrupt/foreign value must never reach the record: NaN/negative would
+    // defeat the scheduler's give-up cap and produce NaN timer delays.
+    if (sanitizeAutoResumeAttempts(attempts) === undefined) return;
+    const managed = this.runs.get(runId);
+    // Only an actively leased ManagedRun is authoritative. Paused and terminal
+    // entries remain in `runs` after their execution releases its lease; another
+    // process may then have resumed and rewritten the disk record. Persisting a
+    // whole stale ManagedRun from here would clobber that newer status/journal.
+    if (managed?.lease) {
+      if ((managed.autoResumeAttempts ?? 0) === attempts) return;
+      managed.autoResumeAttempts = attempts;
+      this.persistRun(managed);
+      return;
+    }
+    const lease = this.persistence.acquireRunLease(runId);
+    if (!lease) return;
+    try {
+      const current = this.persistence.load(runId);
+      if (!current) return;
+      if ((current.autoResumeAttempts ?? 0) !== attempts) {
+        this.persistence.save({ ...current, autoResumeAttempts: attempts });
+      }
+      // A local entry without a lease is only a cache. Once the lease-guarded
+      // merge succeeds, bring that cache up to date without making it an
+      // authority for any other persisted field.
+      if (managed) managed.autoResumeAttempts = attempts;
+    } finally {
+      this.persistence.releaseRunLease(lease);
+    }
+  }
+
+  /** Get the persistence layer (for saving workflows). */
   getPersistence(): RunPersistence {
     return this.persistence;
   }

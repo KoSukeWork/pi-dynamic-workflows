@@ -152,6 +152,12 @@ export interface PersistedRunState {
   pendingDelivery?: PendingDeliveryMarker;
 }
 
+/** Normalize persisted auto-resume counters and reject foreign/corrupt values. */
+export function sanitizeAutoResumeAttempts(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
+  return Math.floor(value);
+}
+
 /**
  * Disk/memory marker for a background result that still needs conversation
  * delivery. Kept small on purpose — never store full agent transcripts here.
