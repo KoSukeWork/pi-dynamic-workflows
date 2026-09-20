@@ -73,8 +73,8 @@ function watchRun(manager: WorkflowManager, pi: ExtensionAPI, ctx: ExtensionComm
     if (!e || e.runId === id) update();
   };
   let settled = false;
-  const progressEvents = ["agentStart", "agentEnd", "phase", "log"];
-  const finalEvents = ["complete", "error", "stopped", "paused"];
+  const progressEvents = ["agentStart", "agentEnd", "phase", "log", "tokenUsage"];
+  const finalEvents = ["complete", "error", "stopped", "paused", "deleted"];
   const finish = (e: { runId?: string }) => {
     if (e && e.runId !== id) return;
     if (settled) return;
@@ -303,7 +303,7 @@ export function registerWorkflowCommands(
             ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
             return;
           }
-          registerSavedWorkflow(
+          const registration = registerSavedWorkflow(
             pi,
             getCwd,
             saved,
@@ -314,7 +314,17 @@ export function registerWorkflowCommands(
             () => getStorage()?.load(name) != null,
             () => getStorage()?.load(name) ?? null,
           );
-          ctx.ui.notify(`Saved /${name} (from ${run.runId})`, "info");
+          // Surface a refused registration (audit2 #35): the file persisted,
+          // but a host/extension-owned name never becomes a slash command —
+          // reporting plain success would silently mislead.
+          if (registration.ok) {
+            ctx.ui.notify(`Saved /${name} (from ${run.runId})`, "info");
+          } else {
+            ctx.ui.notify(
+              `Saved "${name}" to the library, but it cannot be registered as a slash command: ${registration.message}`,
+              "warning",
+            );
+          }
           return;
         }
         default:

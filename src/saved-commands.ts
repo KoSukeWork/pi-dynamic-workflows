@@ -66,8 +66,8 @@ export function registerSavedWorkflow(
    * project's storage. When omitted, `wf` is used as a frozen snapshot.
    */
   loadWorkflow?: () => Pick<SavedWorkflow, "name" | "description" | "script" | "parameters"> | null | undefined,
-): void {
-  if (isRegistered(pi, wf.name)) return;
+): { ok: true } | { ok: false; message: string } {
+  if (isRegistered(pi, wf.name)) return { ok: false, message: `/${wf.name} is already registered by the host` };
   const getCwd = typeof cwd === "function" ? cwd : () => cwd;
   const getManager = typeof manager === "function" ? manager : () => manager;
   pi.registerCommand(wf.name, {
@@ -120,6 +120,7 @@ export function registerSavedWorkflow(
       }
     },
   });
+  return { ok: true };
 }
 
 /** Register every saved workflow found in storage.

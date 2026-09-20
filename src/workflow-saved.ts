@@ -10,7 +10,7 @@ import {
   readJsonWithBackupRecovery,
   resolvePersistenceFs,
   unlinkIfExistsSafe,
-  writeJsonAtomicWithBackup,
+  writeJsonAtomicPreservingPreviousBackup,
 } from "./fs-persistence.js";
 import { workflowProjectPaths, workflowUserSavedDir } from "./workflow-paths.js";
 
@@ -107,8 +107,9 @@ export function createWorkflowStorage(cwd: string, fsOverride?: Partial<Persiste
         path,
         savedAt: new Date().toISOString(),
       };
-
-      writeJsonAtomicWithBackup(fs, path, saved);
+      // Overwrite-safe save (audit2 #36): keep the PREVIOUS version as .bak —
+      // an accidental same-name save must not destroy the old script.
+      writeJsonAtomicPreservingPreviousBackup(fs, path, saved);
       return saved;
     },
 
