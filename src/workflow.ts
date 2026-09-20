@@ -170,6 +170,8 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   concurrency?: number;
   /** Retry attempts after a recoverable agent failure. Default 0. */
   agentRetries?: number;
+  /** Optional bounded delay before each recoverable retry. Return 0 to disable. */
+  agentRetryBackoffMs?: (failedAttempt: number) => number;
   tokenBudget?: number | null;
   signal?: AbortSignal;
   /** Maximum number of agents allowed in this run. Default: 1000 */
@@ -433,7 +435,14 @@ async function runWorkflowFrame<T = unknown>(
   // Per-phase model routing from meta.phases[].model, with meta.model as the default.
   const routingConfig = parseModelRoutingFromMeta(meta.phases, meta.model);
   const maxAgents = options.maxAgents ?? MAX_AGENTS_PER_RUN;
-  const agentTimeoutMs = options.agentTimeoutMs !== undefined ? options.agentTimeoutMs : DEFAULT_AGENT_TIMEOUT_MS;
+  let agentTimeoutMs = options.agentTimeoutMs !== undefined ? options.agentTimeoutMs : DEFAULT_AGENT_TIMEOUT_MS;
+  if (
+    agentTimeoutMs !== null &&
+    (typeof agentTimeoutMs !== "number" || !Number.isFinite(agentTimeoutMs) || agentTimeoutMs < 1 || agentTimeoutMs > 2_147_483_647)
+  ) {
+    options.onLog?.(`ignoring invalid agentTimeoutMs (${String(options.agentTimeoutMs)}); using the configured default instead`);
+    agentTimeoutMs = DEFAULT_AGENT_TIMEOUT_MS;
+  }
   const runId = options.runId ?? `run-${started.toString(36)}`;
   const baseCwd = options.cwd ?? process.cwd();
   // Snapshot the agentType registry ONCE per run so two agent() calls can't
@@ -590,6 +599,17 @@ async function runWorkflowFrame<T = unknown>(
   };
 
   const agent = (prompt: string, agentOptions: AgentOptions = {}): Promise<unknown> => {
+    if (
+      agentOptions.timeoutMs !== undefined &&
+      agentOptions.timeoutMs !== null &&
+      (typeof agentOptions.timeoutMs !== "number" || !Number.isFinite(agentOptions.timeoutMs) || agentOptions.timeoutMs < 1 || agentOptions.timeoutMs > 2_147_483_647)
+    ) {
+      throw new WorkflowError(
+        "agent() timeoutMs must be a finite number of milliseconds in [1, 2^31-1]",
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false },
+      );
+    }
     // Track every call (awaited or not) so the top-level run can drain
     // outstanding calls before completing (see SharedRuntime.inFlight and the
     // drain in the finally below) — this is what stops a forgotten `await`
@@ -936,6 +956,22 @@ async function runWorkflowFrame<T = unknown>(
               // the final attempt does), so report it on the dedicated channel
               // instead (see WorkflowRunOptions.onRetrySpend).
               options.onRetrySpend?.(tokens);
+              const defaultBackoffMs = Math.min(250 * 2 ** (attempt - 1), 2_000);
+              let backoffMs = defaultBackoffMs;
+              if (options.agentRetryBackoffMs) {
+                try {
+                  const injected = options.agentRetryBackoffMs(attempt);
+                  backoffMs = injected === 0
+                    ? 0
+                    : typeof injected === "number" && Number.isFinite(injected) && injected > 0
+                      ? Math.min(injected, 2_000)
+                      : defaultBackoffMs;
+                } catch {
+                  backoffMs = defaultBackoffMs;
+                }
+              }
+              if (backoffMs > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs));
+              throwIfAborted();
               continue;
             }
 

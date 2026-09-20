@@ -181,7 +181,7 @@ const AGENT_OPTIONS: OptionShape = {
     option("tier", "string", true, null, ["configured route name"], "model-routes"),
     option("isolation", '"worktree"', true),
     option("agentType", "string", true, null, ["must come from provided context"], "agent-types"),
-    option("timeoutMs", "number | null", true, "run timeout; null disables"),
+    option("timeoutMs", "number | null", true, "run timeout, finite ms in [1, 2^31-1]; null disables"),
     option("retries", "number", true, "run retry count", ["finite values are floored and clamped to 0..3"]),
   ],
 };

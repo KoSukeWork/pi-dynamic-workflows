@@ -20,7 +20,7 @@ Every exact fact below is projected from the installed extension's capability co
 - `tier`: string (optional; configured route name; dynamic reference: model-routes)
 - `isolation`: "worktree" (optional)
 - `agentType`: string (optional; must come from provided context; dynamic reference: agent-types)
-- `timeoutMs`: number | null (optional; default: run timeout; null disables)
+- `timeoutMs`: number | null (optional; default: run timeout, finite ms in [1, 2^31-1]; null disables)
 - `retries`: number (optional; default: run retry count; finite values are floored and clamped to 0..3)
 - Constraint: recoverable failures return null after retries; nonrecoverable failures throw
 - Constraint: failed attempts remove only their own shared-store writes; equal-valued sibling writes survive and later rollbacks cannot restore discarded writes
