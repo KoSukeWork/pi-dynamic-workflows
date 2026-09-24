@@ -140,9 +140,12 @@ export function isProviderUsageLimit(error: unknown): error is WorkflowError {
 export function classifyProviderLimit(text: string | undefined): { matched: boolean; resetHint?: string } {
   if (!text) return { matched: false };
   const matched =
-    /usage limit|limit reached|insufficient[_\s]?quota|quota exceeded|exceeded your current quota|out of budget|available balance|\bquota\b|rate.?limit|too many requests|\b429\b|GoUsageLimitError|FreeUsageLimitError|\bbilling\b/i.test(
+    /usage limit|limit reached|insufficient[_\s]?quota|quota exceeded|exceeded your current quota|out of budget|out of\s+(?:your\s+)?(?:extra|included)\s+usage|available balance|\bquota\b|rate.?limit|too many requests|\b429\b|GoUsageLimitError|FreeUsageLimitError|\bbilling\b/i.test(
       text,
     );
+  // "out of (your) extra/included usage" covers Anthropic subscription wording
+  // ("You've run out of extra usage"). Deliberately requires extra|included so
+  // benign text like "ran out of usage examples" never matches.
   if (!matched) return { matched: false };
   const reset = text.match(/resets?\s+(?:in|at)\s+[^.\n]+/i);
   return { matched: true, resetHint: reset?.[0]?.trim() };
