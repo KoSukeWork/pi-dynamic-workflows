@@ -80,7 +80,7 @@ export interface PersistedRunState {
    * own callSeq at 0) — absent on journals persisted before that namespacing
    * existed; see JournalEntry.runId in workflow.ts for the resume-time
    * legacy-degradation behavior. `storeDelta` is this call's SharedStore
-   * write delta, replayed additively on resume.
+   * write delta; optional per-key versions preserve write order on resume.
    */
   journal?: Array<{
     index: number;
@@ -88,6 +88,7 @@ export interface PersistedRunState {
     hash: string;
     result: unknown;
     storeDelta?: Record<string, unknown>;
+    storeDeltaVersions?: Record<string, number>;
   }>;
   /**
    * Opt-out of auto-resume for this run (default true, i.e. eligible unless

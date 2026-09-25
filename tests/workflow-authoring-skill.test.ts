@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, normalize, relative } from "node:path";
 import test from "node:test";
 import packageJson from "../package.json" with { type: "json" };
+import { runNpm } from "../scripts/run-npm.js";
 import { runWorkflow } from "../src/workflow.js";
 import {
   CAPABILITY_TABLE_PUBLICATION_PATHS,
@@ -54,7 +54,7 @@ function requiredSchemaFields(schema?: Record<string, unknown>): unknown[] {
 }
 
 function publishableFiles(): Set<string> {
-  const output = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: ROOT, encoding: "utf8" });
+  const output = runNpm(["pack", "--dry-run", "--json", "--ignore-scripts"], ROOT);
   return new Set(parseNpmPackFilePaths(output));
 }
 
@@ -329,7 +329,8 @@ test("generated helper facts expose exact callback, option, result, and failure 
   assert.match(agent?.constraints.join(" ") ?? "", /schema noncompliance.*nonrecoverable/i);
   assert.match(agent?.constraints.join(" ") ?? "", /explicit model.*unavailable.*throws MODEL_NOT_FOUND/i);
   assert.match(agent?.constraints.join(" ") ?? "", /implicit default medium tier.*session default when unavailable/i);
-  assert.match(agent?.constraints.join(" ") ?? "", /worktree isolation.*best-effort/i);
+  assert.match(agent?.constraints.join(" ") ?? "", /worktree isolation failure stops the agent/i);
+  assert.match(agent?.constraints.join(" ") ?? "", /worktrees are retained/i);
   assert.match(background?.constraints.join(" ") ?? "", /background workflows are headless/i);
   assert.match(background?.constraints.join(" ") ?? "", /checkpoint.*foreground confirmation/i);
   assert.match(metadata?.signature ?? "", /phases\?: Array<\{ title: string; detail\?: string; model\?: string \}>/);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { CapabilitySupport, DiscoveryPlacement, WorkflowAuthoringProtection } from "../src/enums.js";
 import {
   WORKFLOW_AUTHORING_COVERAGE,
@@ -10,7 +11,7 @@ import {
 } from "../src/workflow-authoring-coverage.js";
 import { WORKFLOW_CAPABILITY_DEFINITION } from "../src/workflow-capability-contract.js";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 test("authoring coverage inventories every stable contract, pattern, and recipe exactly once", () => {
   const expectedIds = [

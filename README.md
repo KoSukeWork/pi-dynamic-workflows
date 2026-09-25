@@ -78,7 +78,11 @@ return await agent(
 - **Real parallel orchestration** — fan out up to 16 concurrent and 1000 total subagents from one orchestration script.
 - **Per-agent model routing** — use `small`, `medium`, or `big` tiers, or choose an exact provider/model and thinking level.
 - **Journaled resume** — replay completed agents after interruption without rerunning them or spending their tokens again. The orchestrator can also resume with an **edited script** (`resumeFromRunId`): unchanged `agent()` calls replay from cache and only edited/new ones re-run — so a single bad prompt no longer means paying to re-run the whole workflow.
-- **Git worktree isolation** — let parallel agents edit safely on throwaway branches with `isolation: "worktree"`.
+- **Git worktree isolation** — let parallel agents edit on separate branches with `isolation: "worktree"`. Isolation failure stops the agent. Changed or committed worktrees are retained, with their paths and branches in the run log; only unchanged successful worktrees are removed automatically.
+  On resume, unchanged call prefixes reuse their retained worktrees after ownership and Git state checks, preserving partial edits and commits even when a nested workflow must execute without cached results.
+  Changing an upstream agent or checkpoint call gives downstream agents a fresh worktree while preserving the old directories.
+  Nested calls include their script, arguments, and agent-definition snapshot in downstream identities, so changing a child also invalidates later parent and sibling work.
+  A call's display label can change without restarting its retained work, including default labels affected by parent/child execution order. Editing an enclosing script conservatively restarts its nested workflows as described below.
 - **Measured usage** — report real tokens and cost from each subagent session; add run, phase, or agent budgets only when you want them.
 - **Visible background runs** — track phases, agents, models, fresh/cache tokens, cost, and live tok/s from the progress panel or `/workflows` navigator.
 - **Quality patterns** — compose `verify()`, `judgePanel()`, `loopUntilDry()`, and `completenessCheck()` instead of rebuilding review loops.
@@ -293,6 +297,23 @@ Workflow scripts run in a Node `vm` sandbox. `Date.now()`, `Math.random()`, `new
 Journal replay — including edit-and-resume via `resumeFromRunId` — matches cached agent results by **positional call index** (the order in which `agent()` calls execute), the same contract Claude Code uses. Editing an `agent()` prompt in place reuses the cache up to that call and re-runs it and everything after. Inserting, removing, or reordering an `agent()` call before others shifts their positions and invalidates the cache from that point on (mismatched calls simply re-run — no crash). To preserve the cached prefix, keep the earlier still-good `agent()` calls unchanged and in the same order.
 
 Only a call that finishes with a real result is journaled — a call whose every attempt ended in a recoverable failure (including one that only ever produced `AGENT_EMPTY_OUTPUT`) is never cached. Resuming such a run with `resumeFromRunId` therefore replays every earlier, already-succeeded call from cache and re-runs only that one call and everything lexically after it — cheap and exactly targeted, not a full re-run of the fleet.
+
+Shared-store writes are visible immediately. A failed attempt removes only its own writes: a sibling's equal-valued write survives, and later failures cannot restore an already-discarded write. The latest surviving write wins, including when retries rewrite the same key.
+
+New journals snapshot each agent's shared-store values together with per-key write versions. Replay preserves the last successful write even when parallel calls replay in a different order; writes made after resume take precedence over the saved versions. Legacy journals without versions remain readable and retain call-order replay because their original write order was not recorded.
+
+Structured agent results and checkpoint answers are saved as independent journal snapshots, and each replay returns a separate mutable copy. Script changes to nested objects or arrays cannot alter later replays. This cannot repair results already mutated and persisted by an older version.
+
+Managed runs (the workflow tool and `WorkflowManager`) retain a deep snapshot of the initial arguments and give each execution a separate mutable copy. Script or caller mutations cannot change the persisted input; only an explicit resume argument override replaces it. Managed arguments must be cloneable (functions and promises are rejected before starting the run); use JSON-compatible values for disk persistence. This keeps child worktree identities stable across pause/resume even when a script mutates its arguments.
+
+Nested workflow misses propagate to following parent and sibling calls, including checkpoints.
+The nested identity captures the child script, arguments, and the sorted agent-definition snapshot at invocation; editing any definition conservatively invalidates that child and its downstream work.
+Each child's private cache and worktree scope also captures the enclosing script and its initial arguments, before the script can mutate them. Enclosing edits conservatively invalidate the whole child, including when the changed parent call runs after the child starts; the parent's own positional worktree prefix remains independent of this private scope.
+Child and enclosing arguments must contain serializable data; functions and promises are rejected before child agents start. Top-level-only direct `runWorkflow()` calls can still use opaque arguments.
+Calls made while a child is still pending run live because the child may miss after its next await; their worktree identity stays independent of completion timing.
+A parent miss also disables subsequent agent and checkpoint replay in an already-running child, even when the scripts and arguments have not changed. Unchanged inputs still allow partially completed child worktrees to resume.
+Journals and nested worktrees created before this identity change may be replayed live or replaced by fresh worktrees once; retained directories and commits are preserved.
+Worktrees created with older label-based names also use fresh directories on their first resume after upgrading; the original directories and commits remain available for manual recovery.
 
 ## Upgrading to 3.0
 

@@ -441,12 +441,10 @@ test("resume degrades gracefully (never corrupts) when replaying a pre-namespaci
     resumeJournal: legacyResumeJournal,
   });
 
-  // Graceful degradation, not corruption: the surviving legacy entry belongs
-  // to the parent's call (its hash matches "outer-call"'s hash under the
-  // collapsed key), so the parent cache-hits and the child — whose own entry
-  // was lost in the collapse — safely re-runs live instead of replaying the
-  // parent's (wrong) cached value. The end result is still correct.
-  assert.equal(secondCalls.count, 1, "the frame that lost its slot in the collapse re-runs live, not corrupted");
+  // The child lost its entry and must run live. Its miss also invalidates the
+  // following parent call, whose cached result may depend on the child's store.
+  // Both calls rerun safely instead of applying an entry to the wrong frame.
+  assert.equal(secondCalls.count, 2, "the missing child entry invalidates the following parent call");
   // JSON-compare — see the note in the previous test about cross-vm-realm
   // prototypes tripping up assert.deepEqual.
   assert.equal(

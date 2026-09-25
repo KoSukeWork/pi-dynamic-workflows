@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
+import { serialize } from "node:v8";
 import vm from "node:vm";
 import type { Node } from "acorn";
 import { parse } from "acorn";
@@ -78,11 +79,11 @@ export interface JournalEntry {
   result: unknown;
   /**
    * Per-agent write delta (keys set by this agent) for additive replay on resume.
-   * Replaces the former full-map snapshot to fix parallel-agent ordering: applying
-   * deltas in callSeq order accumulates all agents' writes correctly regardless of
-   * which agent finished first. Absent on older journal entries.
+   * Values are independent snapshots. Absent on older journal entries.
    */
   storeDelta?: Record<string, unknown>;
+  /** Actual per-key write order; legacy entries without it replay in call order. */
+  storeDeltaVersions?: Record<string, number>;
 }
 
 /**
@@ -405,8 +406,30 @@ export async function runWorkflow<T = unknown>(
   script: string,
   options: WorkflowRunOptions = {},
 ): Promise<WorkflowRunResult<T>> {
+  return runWorkflowFrame<T>(script, options, {
+    resume: options.resumeJournal !== undefined || options.resumeFromRunId !== undefined,
+    prefix: "",
+  });
+}
+
+async function runWorkflowFrame<T = unknown>(
+  script: string,
+  options: WorkflowRunOptions,
+  frame: { resume: boolean; prefix: string; scope?: string; canReplay?: () => boolean; onMiss?: () => void },
+): Promise<WorkflowRunResult<T>> {
   const started = Date.now();
   const { meta, body } = parseWorkflowScript(script);
+  // A child can read writes from parent calls that have not been invoked yet.
+  // Snapshot enclosing inputs before the script can mutate args. Keep this
+  // separate from the parent's positional prefix so its own earlier work can
+  // still resume when a later call changes.
+  let enclosingInputs: Buffer | undefined;
+  try {
+    enclosingInputs = serialize([script, options.args]);
+  } catch {
+    // Only nested execution needs this identity; top-level-only embedders may
+    // still pass opaque args. workflow() reports the validation error below.
+  }
   // Per-phase model routing from meta.phases[].model, with meta.model as the default.
   const routingConfig = parseModelRoutingFromMeta(meta.phases, meta.model);
   const maxAgents = options.maxAgents ?? MAX_AGENTS_PER_RUN;
@@ -436,6 +459,36 @@ export async function runWorkflow<T = unknown>(
     phaseBudgets: new Map(),
     callSeq: 0,
     firstMiss: Number.POSITIVE_INFINITY,
+  };
+
+  // Track input identities at lexical call time, including cached calls. A miss
+  // can mean unfinished work, so it must not itself change the worktree identity.
+  // Changing an earlier call does change every later identity, across nesting.
+  let worktreePrefix = frame.prefix;
+  const advanceWorktreePrefix = (identity: string): string => {
+    worktreePrefix = worktreePrefix
+      ? createHash("sha256")
+          .update(JSON.stringify([worktreePrefix, identity]))
+          .digest("hex")
+      : identity;
+    return worktreePrefix;
+  };
+
+  // Nested inputs are captured at invocation, not completion. Including them in
+  // both cache and worktree identities keeps parallel resume independent of how
+  // quickly cached children finish, and covers removed child calls as well.
+  let cacheScope = frame.scope ?? "";
+  let pendingChildren = 0;
+  const scopedHash = (hash: string) =>
+    cacheScope
+      ? createHash("sha256")
+          .update(JSON.stringify([cacheScope, hash]))
+          .digest("hex")
+      : hash;
+  const markMiss = (index: number) => {
+    if (index >= state.firstMiss) return;
+    state.firstMiss = index;
+    frame.onMiss?.();
   };
 
   const agentRunner = options.agent ?? new WorkflowAgent(options);
@@ -483,6 +536,9 @@ export async function runWorkflow<T = unknown>(
   // One store instance per run; nested workflow() calls inherit the parent's store
   // so all agents across nesting levels share the same key-value space.
   const store: SharedStore = options.sharedStore ?? new SharedStore();
+  if (!options.sharedRuntime) {
+    for (const entry of options.resumeJournal?.values() ?? []) store.reserveVersions(entry.storeDeltaVersions ?? {});
+  }
 
   const log = (message: string) => {
     const text = String(message);
@@ -618,7 +674,10 @@ export async function runWorkflow<T = unknown>(
     // Deterministic resume key: assigned at lexical call time, before the limiter,
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
     const callIndex = state.callSeq++;
-    const callHash = hashAgentCall(prompt, modelSpec, assignedPhase, agentOptions, agentDefinitionKey(agentDef));
+    const callHash = scopedHash(
+      hashAgentCall(prompt, modelSpec, assignedPhase, agentOptions, agentDefinitionKey(agentDef)),
+    );
+    const worktreeHash = advanceWorktreePrefix(callHash);
     // Store delta key: callIndex alone is NOT run-unique. A nested workflow()
     // call (see workflowFn below) shares this run's SharedStore instance but
     // restarts its own callSeq at 0, so a parent agent and a concurrently
@@ -653,25 +712,33 @@ export async function runWorkflow<T = unknown>(
     const cached = options.resumeJournal?.get(deltaKey);
     const hashMatches = cached != null && cached.hash === callHash;
     const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
-    if (hashMatches && !cachedEmptyOutput && callIndex < state.firstMiss) {
+    if (
+      hashMatches &&
+      !cachedEmptyOutput &&
+      callIndex < state.firstMiss &&
+      pendingChildren === 0 &&
+      frame.canReplay?.() !== false
+    ) {
+      const result = structuredClone(cached.result);
       options.onAgentStart?.({ id: deltaKey, label, phase: assignedPhase, prompt, model: displayModel });
       options.onAgentEnd?.({
         id: deltaKey,
         label,
         phase: assignedPhase,
-        result: cached.result,
+        result,
         tokens: 0,
         model: displayModel,
       });
-      // Apply this agent's write delta so live agents later in the run see a
-      // consistent store. Additive apply preserves parallel-agent writes that
-      // came from higher-callIndex agents finishing before this one.
-      if (cached.storeDelta) store.applyDelta(cached.storeDelta);
-      return cached.result;
+      // Replay by actual write version, not the order cached calls execute.
+      if (cached.storeDelta) store.applyDelta(cached.storeDelta, cached.storeDeltaVersions ?? {});
+      return result;
     }
     // A genuine miss (no journal entry, or the hash changed) marks where the
     // unchanged prefix ends; this call and every later one then run live.
-    if (!hashMatches || cachedEmptyOutput) state.firstMiss = Math.min(state.firstMiss, callIndex);
+    // An overlapping child may still encounter a miss after its next await;
+    // replay is not proven safe until that child finishes. Running live does
+    // not alter the input identity used to retain partial worktrees.
+    markMiss(callIndex);
 
     return limiter(async () => {
       const timeout = agentOptions.timeoutMs !== undefined ? agentOptions.timeoutMs : agentTimeoutMs;
@@ -688,10 +755,35 @@ export async function runWorkflow<T = unknown>(
       let worktree: Worktree | undefined;
       const resolvedIsolation = agentOptions.isolation ?? agentDef?.isolation;
       if (resolvedIsolation === "worktree") {
-        worktree = await createWorktree(baseCwd, `${runId}-${callIndex}-${label}`);
-        if (!worktree.isolated) log(`isolation ignored for "${label}" (${worktree.reason})`);
+        // A nested frame can resume partial work even when its result cache is disabled.
+        // Changed call prefixes get a fresh directory without touching retained work.
+        // Display labels use the shared call count, which can change when cached
+        // children finish earlier on resume. Keep them out of the persistent identity.
+        worktree = await createWorktree(baseCwd, `${runId}-${callIndex}-${worktreeHash}`, {
+          resume: frame.resume,
+        });
+        if (!worktree.isolated) {
+          const error = new WorkflowError(
+            `Worktree isolation failed for "${label}": ${worktree.reason}`,
+            WorkflowErrorCode.AGENT_EXECUTION_ERROR,
+            { agentLabel: label },
+          );
+          options.onAgentEnd?.({
+            id: deltaKey,
+            label,
+            phase: assignedPhase,
+            result: null,
+            tokens: 0,
+            model: displayModel,
+            error: error.message,
+            errorCode: error.code,
+            recoverable: false,
+          });
+          throw error;
+        }
       }
       const runCwd = worktree?.isolated ? worktree.cwd : undefined;
+      let completed = false;
 
       // Captured from the subagent's real session usage; falls back to an
       // estimate when the provider reports no usage (total === 0). Usage is reset
@@ -795,12 +887,15 @@ export async function runWorkflow<T = unknown>(
             }
 
             const tokens = recordTokens(result);
+            const journalResult = options.onAgentJournal ? structuredClone(result) : undefined;
+            const delta = store.commitJournalDelta(deltaKey);
             options.onAgentJournal?.({
               index: callIndex,
               runId,
               hash: callHash,
-              result,
-              storeDelta: store.commitDelta(deltaKey),
+              result: journalResult,
+              storeDelta: delta.values,
+              storeDeltaVersions: delta.versions,
             });
             options.onAgentEnd?.({
               id: deltaKey,
@@ -812,6 +907,7 @@ export async function runWorkflow<T = unknown>(
               worktree: runCwd,
               model: displayModel,
             });
+            completed = true;
             return result;
           } catch (error) {
             if (isAborted()) throw error;
@@ -874,8 +970,10 @@ export async function runWorkflow<T = unknown>(
         }
         return null;
       } finally {
-        // Always tear down the worktree, even on timeout/abort.
-        if (worktree?.isolated) await removeWorktree(worktree);
+        // An aborted runner may still be unwinding; preserve its directory too.
+        if (worktree?.isolated && (!completed || !(await removeWorktree(worktree)))) {
+          log(`Retained worktree for "${label}": ${worktree.cwd} (branch ${worktree.branch})`);
+        }
       }
     });
   };
@@ -969,7 +1067,10 @@ export async function runWorkflow<T = unknown>(
     const childScript = resolved ?? String(nameOrScript);
     const workflowName = String(nameOrScript);
     options.onRuntimeEvent?.({ type: "workflow", stage: "start", name: workflowName, args: childArgs });
+    const parentCallIndex = state.callSeq;
     shared.depth++;
+    pendingChildren++;
+    let completed = false;
     try {
       // Propagate the resumeJournal into the child frame ONLY while the
       // parent's own longest-unchanged-prefix is still intact at the moment
@@ -988,24 +1089,81 @@ export async function runWorkflow<T = unknown>(
       // "must run live" for calls within one frame; a nested workflow() is
       // no exception; once anything upstream in the parent has missed, cut
       // the child off from the journal entirely so it runs fully live.
-      const prefixIntact = state.firstMiss === Number.POSITIVE_INFINITY;
-      const child = await runWorkflow(childScript, {
-        ...options,
-        args: childArgs,
-        sharedRuntime: shared,
-        // Propagate the parent's store so nested agents share the same key-value space.
-        sharedStore: store,
-        resumeJournal: prefixIntact ? options.resumeJournal : undefined,
-        resumeFromRunId: undefined,
-        // shared.nestedCallSeq, not shared.depth — see its doc comment: depth
-        // returns to 0 between sequential sibling calls, which would otherwise
-        // mint the same child runId (and hence colliding deltaKeys/event ids)
-        // for two different children.
-        runId: `${runId}-nested${++shared.nestedCallSeq}`,
-        persistLogs: false,
-      });
+      const prefixIntact = state.firstMiss === Number.POSITIVE_INFINITY && frame.canReplay?.() !== false;
+      if (!enclosingInputs) {
+        throw new WorkflowError(
+          "workflow() enclosing args must contain serializable data, not functions or promises",
+          WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+          { recoverable: false },
+        );
+      }
+      let argumentIdentity: Buffer;
+      try {
+        // JSON would collapse distinct values such as [undefined] and [null].
+        argumentIdentity = serialize(childArgs);
+      } catch {
+        throw new WorkflowError(
+          "workflow() childArgs must contain serializable data, not functions or promises",
+          WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+          {
+            recoverable: false,
+          },
+        );
+      }
+      const childWorktreePrefix = advanceWorktreePrefix(
+        createHash("sha256")
+          .update(
+            JSON.stringify({
+              script: childScript,
+              // Capture the registry conservatively: agentType can be selected
+              // dynamically later in the child. Sorting removes map insertion order.
+              agents: [...agentRegistry]
+                .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+                .map(([name, def]) => [name, agentDefinitionKey(def)]),
+            }),
+          )
+          .update(argumentIdentity)
+          .digest("hex"),
+      );
+      cacheScope = childWorktreePrefix;
+      // Include the whole enclosing invocation in the child's private scope:
+      // parent writes can occur after workflow() starts, and cache hits can
+      // reorder later invocations. A live parent-prefix getter is enough to
+      // reject stale results, but cannot give partial worktrees stable input
+      // identities across those order changes. Do not feed this conservative
+      // scope back into the parent's own positional worktree prefix.
+      const childScope = createHash("sha256").update(childWorktreePrefix).update(enclosingInputs).digest("hex");
+      const child = await runWorkflowFrame(
+        childScript,
+        {
+          ...options,
+          args: childArgs,
+          agentRegistry,
+          sharedRuntime: shared,
+          // Propagate the parent's store so nested agents share the same key-value space.
+          sharedStore: store,
+          resumeJournal: prefixIntact ? options.resumeJournal : undefined,
+          resumeFromRunId: undefined,
+          // shared.nestedCallSeq, not shared.depth — see its doc comment: depth
+          // returns to 0 between sequential sibling calls, which would otherwise
+          // mint the same child runId (and hence colliding deltaKeys/event ids)
+          // for two different children.
+          runId: `${runId}-nested${++shared.nestedCallSeq}`,
+          persistLogs: false,
+        },
+        {
+          resume: frame.resume,
+          prefix: childScope,
+          scope: childScope,
+          canReplay: () => state.firstMiss === Number.POSITIVE_INFINITY && frame.canReplay?.() !== false,
+          onMiss: () => markMiss(parentCallIndex),
+        },
+      );
+      completed = true;
       return child.result;
     } finally {
+      if (!completed) markMiss(parentCallIndex);
+      pendingChildren--;
       shared.depth--;
       options.onRuntimeEvent?.({ type: "workflow", stage: "end", name: workflowName, args: childArgs });
     }
@@ -1195,15 +1353,22 @@ export async function runWorkflow<T = unknown>(
       throw agentLimitError();
     }
     const callIndex = state.callSeq++;
-    const callHash = hashCheckpoint(promptText, checkpointOptions);
+    const callHash = scopedHash(hashCheckpoint(promptText, checkpointOptions));
+    advanceWorktreePrefix(callHash);
     // Namespaced by runId like agent()'s deltaKey — see JournalEntry.runId.
     const journalKey = `${runId}:${callIndex}`;
     const cached = options.resumeJournal?.get(journalKey);
-    if (cached != null && cached.hash === callHash && callIndex < state.firstMiss) {
+    if (
+      cached != null &&
+      cached.hash === callHash &&
+      callIndex < state.firstMiss &&
+      pendingChildren === 0 &&
+      frame.canReplay?.() !== false
+    ) {
       shared.agentCount++;
-      return cached.result; // replay the journaled human reply
+      return structuredClone(cached.result); // keep the journaled human reply independent
     }
-    if (cached == null || cached.hash !== callHash) state.firstMiss = Math.min(state.firstMiss, callIndex);
+    markMiss(callIndex);
     shared.agentCount++;
 
     let reply: unknown;
@@ -1219,7 +1384,7 @@ export async function runWorkflow<T = unknown>(
       reply = checkpointOptions.default ?? true;
     }
     throwIfAborted();
-    options.onAgentJournal?.({ index: callIndex, runId, hash: callHash, result: reply });
+    options.onAgentJournal?.({ index: callIndex, runId, hash: callHash, result: structuredClone(reply) });
     return reply;
   };
 

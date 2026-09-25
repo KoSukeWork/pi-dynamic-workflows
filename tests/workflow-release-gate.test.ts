@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import packageJson from "../package.json" with { type: "json" };
+import { runNpm } from "../scripts/run-npm.js";
 import { WORKFLOW_AUTHORING_COVERAGE } from "../src/workflow-authoring-coverage.js";
 import { WORKFLOW_CAPABILITY_DEFINITION } from "../src/workflow-capability-contract.js";
 import { checkWorkflowRelease, parseNpmPackFilePaths } from "../src/workflow-release-gate.js";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 function publishableFiles(): string[] {
-  const output = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: ROOT, encoding: "utf8" });
+  const output = runNpm(["pack", "--dry-run", "--json", "--ignore-scripts"], ROOT);
   return parseNpmPackFilePaths(output);
 }
 

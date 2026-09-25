@@ -19,6 +19,17 @@ import {
 } from "./run-persistence.js";
 import { type JournalEntry, parseWorkflowScript, runWorkflow, type WorkflowRunResult } from "./workflow.js";
 
+function cloneRunArgs(args: unknown): unknown {
+  try {
+    return structuredClone(args);
+  } catch {
+    throw new WorkflowError(
+      "Managed workflow args must contain cloneable data; use JSON-compatible values for persisted runs",
+      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+    );
+  }
+}
+
 export interface ManagedRun {
   runId: string;
   status: RunStatus;
@@ -29,6 +40,7 @@ export interface ManagedRun {
   startedAt: Date;
   /** The real script, kept so the run can be resumed. */
   script: string;
+  /** Initial input snapshot, isolated from caller and execution mutations. */
   args?: unknown;
   /** Accumulated agent results for resume (deterministic call index -> result). */
   journal: JournalEntry[];
@@ -503,6 +515,7 @@ export class WorkflowManager extends EventEmitter {
     exec: ExecOptions = {},
   ): { runId: string; promise: Promise<WorkflowRunResult> } {
     const parsed = parseWorkflowScript(script);
+    args = cloneRunArgs(args);
     const slug = parsed.meta.name
       ? parsed.meta.name
           .toLowerCase()
@@ -588,7 +601,7 @@ export class WorkflowManager extends EventEmitter {
     // when a workflow is aborted/paused/stopped — executeRun()'s catch block
     // already records status/event/persist, but the promise still rejects.
     // The original promise is returned so callers can await it in try/catch.
-    const promise = this.executeRun(managed, script, args, exec);
+    const promise = this.executeRun(managed, exec);
     promise.catch(() => {});
 
     return { runId, promise };
@@ -617,7 +630,7 @@ export class WorkflowManager extends EventEmitter {
     // Persist the initial state immediately so listRuns()/the task panel can see
     // the run the moment it starts, not only after the first agent journals.
     this.persistRun(managed);
-    return this.executeRun(managed, script, args, exec);
+    return this.executeRun(managed, exec);
   }
 
   /** Build a fresh managed run with an empty snapshot. */
@@ -648,7 +661,7 @@ export class WorkflowManager extends EventEmitter {
       controller: new AbortController(),
       startedAt: new Date(),
       script,
-      args,
+      args: cloneRunArgs(args),
       journal: [],
       background: false,
       sessionId: this.sessionId,
@@ -657,12 +670,7 @@ export class WorkflowManager extends EventEmitter {
     };
   }
 
-  private async executeRun(
-    managed: ManagedRun,
-    script: string,
-    args?: unknown,
-    exec: ExecOptions = {},
-  ): Promise<WorkflowRunResult> {
+  private async executeRun(managed: ManagedRun, exec: ExecOptions = {}): Promise<WorkflowRunResult> {
     const {
       resumeJournal,
       maxAgents,
@@ -716,9 +724,11 @@ export class WorkflowManager extends EventEmitter {
       else externalSignal.addEventListener("abort", () => managed.controller.abort(), { once: true });
     }
     try {
-      const result = await runWorkflow(script, {
+      const result = await runWorkflow(managed.script, {
         cwd: this.cwd,
-        args,
+        // Scripts may mutate args. Persist only the independent initial input
+        // so every warm/cold resume starts from the same invocation.
+        args: cloneRunArgs(managed.args),
         // Use the managed run's persisted id as the workflow runId so the value
         // returned in result.runId matches the id that listRuns()/resume() use.
         // Otherwise runWorkflow mints an ephemeral `run-<ts>` id and the sync
@@ -1232,12 +1242,13 @@ export class WorkflowManager extends EventEmitter {
 
     const persisted = this.persistence.load(runId);
     if (!persisted?.script || persisted.status === "completed" || persisted.status === "aborted") return false;
+    // Validate and snapshot before acquiring a lease or changing live state.
+    const args = cloneRunArgs(opts?.args !== undefined ? opts.args : persisted.args);
     const lease = this.persistence.acquireRunLease(runId);
     if (!lease) return false;
 
     // Use the edited script when supplied, else the persisted one (backward-compat).
     const script = opts?.script ?? persisted.script;
-    const args = opts?.args !== undefined ? opts.args : persisted.args;
 
     // Normalize the persisted total-at-pause once: PersistedRunState.tokenUsage
     // has optional cost/cacheRead/cacheWrite (legacy runs may lack them), but
@@ -1373,7 +1384,7 @@ export class WorkflowManager extends EventEmitter {
     // correct cumulative count inside this fresh SharedRuntime by the time any
     // new live agent runs — so maxAgents (via A1) is already a genuine
     // cumulative cap across resume with no extra seeding required.
-    void this.executeRun(managed, script, args, { resumeJournal, initialTokenUsage: priorTokenUsage }).catch(() => {});
+    void this.executeRun(managed, { resumeJournal, initialTokenUsage: priorTokenUsage }).catch(() => {});
     return true;
   }
 

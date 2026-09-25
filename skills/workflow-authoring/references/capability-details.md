@@ -2,7 +2,7 @@
 # Exhaustive workflow capability facts
 
 Contract format: `1.0.0`<br>
-Contract content / skill / extension: `3.6.0`
+Contract content / skill / extension: `3.6.3`
 
 Every exact fact below is projected from the installed extension's capability contract. Explanatory judgment belongs in the hand-written references next to this file.
 
@@ -23,13 +23,18 @@ Every exact fact below is projected from the installed extension's capability co
 - `timeoutMs`: number | null (optional; default: run timeout; null disables)
 - `retries`: number (optional; default: run retry count; finite values are floored and clamped to 0..3)
 - Constraint: recoverable failures return null after retries; nonrecoverable failures throw
+- Constraint: failed attempts remove only their own shared-store writes; equal-valued sibling writes survive and later rollbacks cannot restore discarded writes
 - Constraint: schema noncompliance after bounded structured-output repair is nonrecoverable and bypasses agent retries
 - Constraint: per-agent retries override invocation retries; retries are floored and clamped to 0..3
 - Constraint: resume replays only the longest unchanged prefix; the first miss and every later call execute live
+- Constraint: journaled structured results are independent snapshots; mutating returned values cannot change later replays
+- Constraint: versioned shared-store deltas preserve the last successful write per key across parallel replay; legacy deltas without versions retain call-order replay
 - Constraint: selector priority is explicit model > agentType model > tier > phase model > metadata model > implicit medium > session default
 - Constraint: an explicit model, agentType model, tier, or phase model that resolves to an unavailable model throws MODEL_NOT_FOUND naming the source (e.g. the tier and what it resolved to) instead of falling back
 - Constraint: only the implicit default medium tier (no explicit model, tier, agentType, or phase model requested) degrades to the session default when unavailable, logging a one-time run-visible warning instead of throwing
-- Constraint: worktree isolation is best-effort; failure logs that isolation was ignored and continues without an isolated working directory
+- Constraint: worktree isolation failure stops the agent without running in the shared directory; changed or committed worktrees are retained and their paths and branches are logged for inspection
+- Constraint: resume reuses retained worktrees for unchanged call prefixes, including nested workflows with disabled result caches, after verifying workflow ownership, repository, branch and original base; changed upstream or agent calls get a fresh worktree
+- Constraint: worktree identities use run IDs, frame-local call indices, and input prefixes; display labels can change without restarting retained work
 
 <a id="parallel"></a>
 ## parallel
@@ -60,7 +65,12 @@ Every exact fact below is projected from the installed extension's capability co
 - Signature: `workflow(savedName, childArgs?) => Promise<unknown>`
 - Constraint: one nested level
 - Constraint: shares limiter, counters, token accounting, and store
-- Constraint: nested workflows do not reuse the parent resume journal
+- Constraint: nested workflows replay their own namespaced journal entries only while the upstream prefix matches; a child miss invalidates following parent and sibling calls
+- Constraint: nested identities include the child script, arguments, and sorted agent-definition snapshot; changes invalidate downstream caches and worktrees independently of completion order
+- Constraint: a child's private cache and worktree scope also includes the enclosing script and initial arguments; enclosing edits conservatively invalidate that child without changing the parent's own positional worktree prefix
+- Constraint: child and enclosing arguments must contain serializable data; functions and promises are rejected before child agents start
+- Constraint: calls made while a child is pending run live because its unchanged prefix is not yet proven
+- Constraint: a parent miss also disables subsequent agent and checkpoint replay in an already-running child
 
 <a id="verify"></a>
 ## verify
@@ -159,6 +169,7 @@ Every exact fact below is projected from the installed extension's capability co
 - Constraint: foreground confirm and headless behavior are implemented; input/select/timeout are declared-only
 - Constraint: consumes one agent slot and no tokens
 - Constraint: journaled answers replay only within an unchanged resume prefix
+- Constraint: structured checkpoint answers are snapshotted independently of returned values on capture and replay
 
 <a id="log"></a>
 ## log
@@ -239,6 +250,8 @@ Every exact fact below is projected from the installed extension's capability co
 - Classification: `workflow-tool-input`
 - Support: `supported`
 - Signature: `args?: unknown`
+- Constraint: managed runs snapshot initial arguments and explicit resume overrides; each execution gets a separate mutable copy
+- Constraint: managed arguments must be cloneable; use JSON-compatible values for disk persistence
 
 <a id="tool-input-background"></a>
 ## background
