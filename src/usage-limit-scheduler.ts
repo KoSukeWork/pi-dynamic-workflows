@@ -544,6 +544,17 @@ export class UsageLimitScheduler {
       }
       return;
     }
+    // Compatibility path for lightweight managers that predate the manager
+    // ownership seam. Write immediately for deterministic in-process callers,
+    // then repeat after the manager's pause persist to cover the event ordering
+    // used by the legacy implementation.
+    try {
+      const persistence = this.manager.getPersistence();
+      const current = persistence.load(runId);
+      if (current) persistence.save({ ...current, autoResumeAttempts: attempts });
+    } catch (err) {
+      this.diagnostic(`[usage-limit-scheduler] ${runId}: failed to persist autoResumeAttempts`, err);
+    }
     queueMicrotask(() => {
       if (this.disposed) return;
       try {
