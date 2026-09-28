@@ -163,6 +163,27 @@ test("resolveAgentModelSpec: untagged agent defaults to the configured medium ti
   assert.equal(resolveAgentModelSpec({}, "main/model", loadCfg), "vendor/medium");
 });
 
+test("resolveAgentModelSpec: inheritMainModel routes untagged agents to the session model", () => {
+  assert.equal(
+    resolveAgentModelSpec({}, "session/model", loadCfg, undefined, { inheritMainModel: true }),
+    "session/model",
+  );
+  // Explicit model and tier requests retain their precedence.
+  assert.equal(
+    resolveAgentModelSpec({ model: "explicit/model" }, "session/model", loadCfg, undefined, { inheritMainModel: true }),
+    "explicit/model",
+  );
+  assert.equal(
+    resolveAgentModelSpec({ tier: "small" }, "session/model", loadCfg, undefined, { inheritMainModel: true }),
+    "vendor/small",
+  );
+});
+
+test("resolveAgentModelSpec: inheritMainModel without a main model keeps legacy routing", () => {
+  assert.equal(resolveAgentModelSpec({}, undefined, loadCfg, undefined, { inheritMainModel: true }), "vendor/medium");
+  assert.equal(resolveAgentModelSpec({}, undefined, noCfg, undefined, { inheritMainModel: true }), undefined);
+});
+
 test("resolveAgentModelSpec: untagged agent with NO config falls through to session default", () => {
   assert.equal(resolveAgentModelSpec({}, "main/model", noCfg), undefined);
 });
@@ -487,9 +508,10 @@ test("WorkflowAgent.run(): an untagged agent's IMPLICIT default medium tier degr
         fauxAssistantMessage("untagged-second", { stopReason: "stop" }),
       ]);
 
-      const fallbacks: Array<{ tier: string; requestedSpec: string }> = [];
+      const fallbacks: Array<{ tier: string; requestedSpec: string; source: "medium-tier" | "inherit-main" }> = [];
       const agent = new WorkflowAgent({ cwd, modelRegistry: registry });
-      const onModelFallback = (info: { tier: string; requestedSpec: string }) => fallbacks.push(info);
+      const onModelFallback = (info: { tier: string; requestedSpec: string; source: "medium-tier" | "inherit-main" }) =>
+        fallbacks.push(info);
 
       const first = await agent.run("task one", { label: "untagged-1", onModelFallback });
       const second = await agent.run("task two", { label: "untagged-2", onModelFallback });
@@ -498,7 +520,7 @@ test("WorkflowAgent.run(): an untagged agent's IMPLICIT default medium tier degr
       assert.ok(second.includes("untagged-second"), "second untagged agent should still complete via session default");
       assert.deepEqual(
         fallbacks,
-        [{ tier: "medium", requestedSpec: "deadprov/ghost-model" }],
+        [{ tier: "medium", requestedSpec: "deadprov/ghost-model", source: "medium-tier" }],
         "onModelFallback fires exactly once across both run() calls on the same instance",
       );
     });

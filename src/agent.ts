@@ -187,15 +187,18 @@ export function resolveAgentModelSpec(
   mainModel: string | undefined,
   loadConfig: () => ModelTierConfig | null = loadModelTierConfig,
   onTierWithoutConfig?: (tier: string) => void,
+  routing?: { inheritMainModel?: boolean },
 ): string | undefined {
   if (options.model) return options.model;
-  const config = loadConfig();
   if (options.tier) {
+    const config = loadConfig();
     // Tier requested but unconfigured → it silently falls back to mainModel.
     // Let the caller surface that (once) so the no-op is discoverable.
     if (!config) onTierWithoutConfig?.(options.tier);
     return (config ? resolveTierModel(options.tier, config) : undefined) ?? mainModel;
   }
+  if (routing?.inheritMainModel && mainModel) return mainModel;
+  const config = loadConfig();
   // Untagged agent: default to the configured medium tier when one exists.
   if (config) {
     const medium = resolveTierModel("medium", config);
@@ -263,6 +266,8 @@ export interface WorkflowAgentOptions {
    * to the session default when no config is saved yet.
    */
   mainModel?: string;
+  /** When true, untagged agents inherit the session main model. */
+  inheritMainModel?: boolean;
   /**
    * Shared model registry from the host Pi session. When provided, subagents
    * resolve tier/model specs against the same registry the main session uses,
@@ -500,7 +505,7 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * console.warn, or a broken default tier silently drifts every untagged
    * agent's model with zero trace in the run itself.
    */
-  onModelFallback?: (info: { tier: string; requestedSpec: string }) => void;
+  onModelFallback?: (info: { tier: string; requestedSpec: string; source: "medium-tier" | "inherit-main" }) => void;
   /** Called with a compact snapshot of this subagent's message/tool history. */
   onHistory?: (history: AgentHistoryEntry[]) => void;
   /** Run this agent in a different working directory (e.g. an isolated worktree). */
@@ -573,6 +578,7 @@ export class WorkflowAgent {
   private readonly persistAgentSessions: boolean;
   private readonly instructions?: string;
   private readonly mainModel?: string;
+  private readonly inheritMainModel: boolean;
   /** Shared registry from the host session, when provided. */
   private readonly sharedRegistry?: ModelRegistry;
   /** Lazily built once; shares the SDK's agentDir/auth so resolved models are authed. */
@@ -597,7 +603,7 @@ export class WorkflowAgent {
    * model, so a broken default tier shouldn't fail every untagged agent in the
    * run. See onModelFallback below for the (still-loud) degrade path.
    */
-  private warnedDefaultTierUnavailable = false;
+  private warnedImplicitRouteUnavailable = false;
 
   constructor(options: WorkflowAgentOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
@@ -608,6 +614,7 @@ export class WorkflowAgent {
     this.persistAgentSessions = options.persistAgentSessions ?? false;
     this.instructions = options.instructions;
     this.mainModel = options.mainModel;
+    this.inheritMainModel = options.inheritMainModel ?? false;
     this.sharedRegistry = options.modelRegistry;
   }
 
@@ -861,6 +868,7 @@ export class WorkflowAgent {
       this.mainModel,
       () => this.loadTierConfig(),
       () => warnTierUnconfiguredOnce(this.mainModel, modelRegistry),
+      { inheritMainModel: this.inheritMainModel },
     );
 
     // Resolve a requested model spec to a Model object. Specs use Pi CLI-style
@@ -901,9 +909,13 @@ export class WorkflowAgent {
             agentLabel: options.label,
           });
         }
-        if (!this.warnedDefaultTierUnavailable) {
-          this.warnedDefaultTierUnavailable = true;
-          options.onModelFallback?.({ tier: "medium", requestedSpec: modelSpec });
+        if (!this.warnedImplicitRouteUnavailable) {
+          this.warnedImplicitRouteUnavailable = true;
+          options.onModelFallback?.({
+            tier: "medium",
+            requestedSpec: modelSpec,
+            source: this.inheritMainModel && this.mainModel ? "inherit-main" : "medium-tier",
+          });
         }
       } else {
         resolvedModel = resolved.model;

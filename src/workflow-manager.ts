@@ -211,6 +211,8 @@ export interface WorkflowManagerOptions {
   agent?: Pick<WorkflowAgent, "run">;
   /** The session's main model (provider/id), for auto-tiering explore agents. */
   mainModel?: string;
+  /** Route untagged agents to the session's main model instead of implicit medium. */
+  inheritMainModel?: boolean;
   /**
    * The host Pi session's model registry. When provided, workflow subagents
    * resolve models against the same registry as the main session, including
@@ -270,6 +272,7 @@ export type WorkflowManagerReloadOptions = Pick<
   | "excludeSubagentTools"
   | "providerMiddlewareExtensions"
   | "persistAgentSessions"
+  | "inheritMainModel"
 >;
 
 /**
@@ -365,6 +368,7 @@ export class WorkflowManager extends EventEmitter {
   private excludeSubagentTools?: string[];
   private providerMiddlewareExtensions?: string[];
   private persistAgentSessions: boolean;
+  private inheritMainModel: boolean;
 
   constructor(options: WorkflowManagerOptions = {}) {
     super();
@@ -382,6 +386,7 @@ export class WorkflowManager extends EventEmitter {
     this.excludeSubagentTools = options.excludeSubagentTools;
     this.providerMiddlewareExtensions = options.providerMiddlewareExtensions;
     this.persistAgentSessions = options.persistAgentSessions ?? false;
+    this.inheritMainModel = options.inheritMainModel ?? false;
     this.maxTerminalRunsInMemory = options.maxTerminalRunsInMemory ?? DEFAULT_MAX_TERMINAL_RUNS_IN_MEMORY;
     this.persistence = createRunPersistence(this.cwd);
     this.recoverStaleRuns();
@@ -494,6 +499,7 @@ export class WorkflowManager extends EventEmitter {
     this.excludeSubagentTools = options.excludeSubagentTools;
     this.providerMiddlewareExtensions = options.providerMiddlewareExtensions;
     this.persistAgentSessions = options.persistAgentSessions ?? false;
+    this.inheritMainModel = options.inheritMainModel ?? false;
   }
 
   /** Set the session's main model (provider/id). Used to auto-tier explore agents. */
@@ -750,6 +756,7 @@ export class WorkflowManager extends EventEmitter {
         mainModel: this.mainModel,
         modelRegistry: this.modelRegistry,
         persistAgentSessions: this.persistAgentSessions,
+        inheritMainModel: this.inheritMainModel,
         signal: managed.controller.signal,
         concurrency: resolvedConcurrency,
         agentRetries: resolvedAgentRetries,

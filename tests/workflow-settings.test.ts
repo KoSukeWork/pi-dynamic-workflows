@@ -275,6 +275,15 @@ describe("workflow settings", () => {
     });
   });
 
+  it("saves, loads, and validates inheritMainModel", () => {
+    withSettingsPath((settingsPath) => {
+      saveWorkflowSettings({ inheritMainModel: true }, settingsPath);
+      assert.deepEqual(loadWorkflowSettings(settingsPath), { inheritMainModel: true });
+      writeFileSync(settingsPath, JSON.stringify({ inheritMainModel: "true" }), "utf-8");
+      assert.deepEqual(loadWorkflowSettings(settingsPath), {});
+    });
+  });
+
   it("ignores non-boolean persistAgentSessions values", () => {
     withSettingsPath((settingsPath) => {
       mkdirSync(dirname(settingsPath), { recursive: true });

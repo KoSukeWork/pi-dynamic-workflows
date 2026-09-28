@@ -36,6 +36,8 @@ export interface WorkflowSettings {
    * and only the compacted history embedded in the run JSON survives.
    */
   persistAgentSessions?: boolean;
+  /** Route untagged agents to the session's main model when enabled. */
+  inheritMainModel?: boolean;
   /**
    * Character cap on a delivered background-run result's JSON-dump fallback
    * before truncation (default 400). String results and `verdict`/`report`/
@@ -174,6 +176,9 @@ function normalizeSettings(value: unknown): WorkflowSettings {
   }
   if (typeof raw.persistAgentSessions === "boolean") {
     settings.persistAgentSessions = raw.persistAgentSessions;
+  }
+  if (typeof raw.inheritMainModel === "boolean") {
+    settings.inheritMainModel = raw.inheritMainModel;
   }
   const deliveredResultMaxChars = normalizeInteger(raw.deliveredResultMaxChars, 1, 1_000_000);
   if (deliveredResultMaxChars !== undefined) settings.deliveredResultMaxChars = deliveredResultMaxChars;

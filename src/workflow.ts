@@ -878,12 +878,16 @@ async function runWorkflowFrame<T = unknown>(
               onModelResolved: (id: string) => {
                 displayModel = id;
               },
-              onModelFallback: ({ tier, requestedSpec }: { tier: string; requestedSpec: string }) => {
+              onModelFallback: ({ tier, requestedSpec, source }: { tier: string; requestedSpec: string; source: "medium-tier" | "inherit-main" }) => {
                 // Untagged agents' implicit default tier degrading to the session
                 // default must stay visible in the run's own log/event stream, not
                 // just a console.warn (#131) — an explicit model/tier pin instead
                 // throws MODEL_NOT_FOUND and never reaches this callback.
-                log(`default "${tier}" tier model "${requestedSpec}" unavailable — using the session default`);
+                log(
+                  source === "inherit-main"
+                    ? `inherited main model "${requestedSpec}" unavailable — using the session default`
+                    : `default "${tier}" tier model "${requestedSpec}" unavailable — using the session default`,
+                );
               },
               onUsage: (u: AgentUsage) => {
                 usage = u;

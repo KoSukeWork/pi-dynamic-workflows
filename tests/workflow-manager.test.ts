@@ -3174,6 +3174,16 @@ test(
 );
 
 test(
+  "inheritMainModel plumbs through manager construction and reload",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent(), inheritMainModel: true });
+    assert.equal((manager as unknown as { inheritMainModel: boolean }).inheritMainModel, true);
+    manager.reconfigureAfterReload({ inheritMainModel: false });
+    assert.equal((manager as unknown as { inheritMainModel: boolean }).inheritMainModel, false);
+  }),
+);
+
+test(
   "agents receive an identifiable sessionName (workflow:<runId> <label>) for persisted sessions",
   withTempCwd(async (cwd) => {
     const seen: Array<{ label?: string; sessionName?: string }> = [];
