@@ -418,6 +418,53 @@ test("WorkflowAgent.run() still resolves a known model spec normally (no regress
   }
 });
 
+test("WorkflowAgent.run() routes an untagged agent to the inherited main model end-to-end", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-inherit-main-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-inherit-main-cwd-"));
+  const core = createFauxCore({
+    provider: "fauxtest-inherit",
+    models: [{ id: "faux-model", name: "Faux Model", contextWindow: 128000, maxTokens: 4096 }],
+  });
+  try {
+    await withFakeHomeAsync(home, async () => {
+      const runtime = await ModelRuntime.create({ authPath: join(home, "auth.json"), modelsPath: null });
+      runtime.registerProvider("fauxtest-inherit", {
+        name: "Faux Test Inherit",
+        baseUrl: "http://127.0.0.1:9/faux",
+        apiKey: "faux-dummy-key-not-used",
+        api: core.api,
+        streamSimple: core.streamSimple as never,
+        models: core.models.map((m) => ({
+          id: m.id,
+          name: m.name ?? m.id,
+          reasoning: false,
+          input: ["text"] as ("text" | "image")[],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: m.contextWindow ?? 128000,
+          maxTokens: m.maxTokens ?? 4096,
+        })),
+      });
+      const registry = new ModelRegistry(runtime);
+      core.setResponses([fauxAssistantMessage("inherited-main-answer", { stopReason: "stop" })]);
+
+      const resolved: string[] = [];
+      const agent = new WorkflowAgent({
+        cwd,
+        modelRegistry: registry,
+        mainModel: "fauxtest-inherit/faux-model",
+        inheritMainModel: true,
+      });
+      const text = await agent.run("task", { label: "inherit-main", onModelResolved: (spec) => resolved.push(spec) });
+
+      assert.ok(text.includes("inherited-main-answer"));
+      assert.deepEqual(resolved, ["fauxtest-inherit/faux-model"]);
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // WorkflowAgent.run(): asymmetric fail-loud behavior for a tier that resolves
 // to an unavailable model (#131 follow-up) —

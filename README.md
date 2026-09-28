@@ -234,6 +234,8 @@ Use `/workflows-models` to edit them interactively. Without a config, the extens
 
 Omitted `tokenBudget` and `agentTimeoutMs` values use configured `defaultTokenBudget` and `defaultAgentTimeoutMs` settings; without them, runs are unlimited and have no hard per-agent timeout. Add per-run or per-agent values when you need explicit gates. `concurrency` is clamped to 16; `agentRetries` retries only recoverable failures. Defaults live in `~/.pi/workflows/settings.json`; `defaultTokenBudget` is a soft pre-call gate, and a project-level override of `null` cancels a global budget.
 
+Set `inheritMainModel: true` in the same settings file when untagged `agent()` calls should follow the session's current main model. Explicit `model` and `tier` options keep their normal precedence; if the inherited model is unavailable, the agent uses the session default and records the fallback in the run log.
+
 A schema-less agent call that comes back as whitespace-only text is a recoverable `AGENT_EMPTY_OUTPUT` failure and retries like any other. Some models occasionally hit this on an otherwise-fine first attempt; if a fleet is built on one of them, set `agentRetries: 1-2` rather than treating an isolated empty output as a failed run.
 
 Pausing and resuming a run keeps the limits it started with — `maxAgents`, `agentTimeoutMs`, `concurrency`, and `agentRetries` carry over instead of falling back to defaults, and `tokenBudget` tracking is cumulative across the pause, so a run can't reset its spend by pausing and resuming.
