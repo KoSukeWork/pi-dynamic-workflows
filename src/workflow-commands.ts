@@ -128,6 +128,12 @@ export interface WorkflowCommandOptions {
   getManager?: () => WorkflowManager;
   /** Standing effort mode; when high/ultra, `/workflows run` carries its directive too. */
   effort?: EffortState;
+  /**
+   * Replace a bootstrap placeholder with the live handler after deferred loading.
+   * The lazy bootstrap intentionally registers command names up front so Pi can
+   * discover them before the runtime module is loaded.
+   */
+  replaceExisting?: boolean;
 }
 
 /** Register the `/workflows` command against the shared manager. Idempotent. */
@@ -142,11 +148,13 @@ export function registerWorkflowCommands(
   const getManager = opts.getManager ?? (typeof manager === "function" ? manager : () => manager);
   const getCwd = () => opts.getCwd?.() ?? opts.cwd ?? process.cwd();
   const getStorage = () => opts.getStorage?.() ?? opts.storage;
-  try {
-    const taken = (pi.getCommands?.() ?? []).some((c: { name: string }) => c.name === "workflows");
-    if (taken) return;
-  } catch {
-    // getCommands may be unavailable in some hosts; fall through and try to register.
+  if (!opts.replaceExisting) {
+    try {
+      const taken = (pi.getCommands?.() ?? []).some((c: { name: string }) => c.name === "workflows");
+      if (taken) return;
+    } catch {
+      // getCommands may be unavailable in some hosts; fall through and try to register.
+    }
   }
 
   pi.registerCommand("workflows", {

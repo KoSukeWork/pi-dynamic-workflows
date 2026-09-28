@@ -213,6 +213,20 @@ test("registerWorkflowCommands is idempotent (skips when already registered)", (
   assert.equal(registrations, 0);
 });
 
+test("registerWorkflowCommands replaces a deferred bootstrap placeholder when requested", () => {
+  let registrations = 0;
+  const pi: Partial<ExtensionAPI> = {
+    getCommands: () => [{ name: "workflows" }],
+    registerCommand: () => {
+      registrations++;
+    },
+  };
+  registerWorkflowCommands(pi as unknown as ExtensionAPI, {} as unknown as WorkflowManager, {
+    replaceExisting: true,
+  });
+  assert.equal(registrations, 1);
+});
+
 test("/workflows status watches a running run: live status bar + prints on completion", async () => {
   const snapshot = {
     name: "demo",

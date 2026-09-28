@@ -239,6 +239,9 @@ export default function extension(pi: ExtensionAPI) {
     getStorage,
     getCwd,
     effort,
+    // bootstrap.ts registers a deferred placeholder for this same command;
+    // replace it once the live runtime is loaded.
+    replaceExisting: true,
   });
   registerWorkflowModelsCommand(pi);
   registerBuiltinWorkflows(pi, { getManager, getCwd, getStorage });
