@@ -14,11 +14,13 @@ export interface WorkflowGuidanceAcceptance {
 }
 
 function sha256(source: string): string {
-  return createHash("sha256").update(source).digest("hex");
+  // Guidance is a text artifact. Hash its canonical LF form so the frozen
+  // review checkpoint is identical on Windows checkouts and POSIX checkouts.
+  return createHash("sha256").update(source.replace(/\r\n?/g, "\n")).digest("hex");
 }
 
-function manifestEntry(path: string, hash: string): string {
-  return `    path: ${JSON.stringify(path)},\n    sha256: ${JSON.stringify(hash)},`;
+function manifestEntry(path: string, hash: string, newline = "\n"): string {
+  return `    path: ${JSON.stringify(path)},${newline}    sha256: ${JSON.stringify(hash)},`;
 }
 
 /**
@@ -54,13 +56,18 @@ export function acceptWorkflowGuidance(root: string, requestedPaths: readonly st
 
   const manifestPath = join(root, COVERAGE_MANIFEST_PATH);
   const originalManifest = readFileSync(manifestPath, "utf8");
+  // Keep the fixture/repository's existing line ending when replacing an
+  // entry.  Node preserves CRLF when reading text, so a hard-coded LF here
+  // would fail to find the entry on Windows and would rewrite the whole
+  // manifest with mixed line endings.
+  const newline = originalManifest.includes("\r\n") ? "\r\n" : "\n";
   let nextManifest = originalManifest;
   for (const entry of entries) {
-    const previous = manifestEntry(entry.path, entry.previousSha256);
+    const previous = manifestEntry(entry.path, entry.previousSha256, newline);
     if (!nextManifest.includes(previous)) {
       throw new Error(`Coverage manifest does not contain the expected frozen entry for ${entry.path}.`);
     }
-    nextManifest = nextManifest.replace(previous, manifestEntry(entry.path, entry.sha256));
+    nextManifest = nextManifest.replace(previous, manifestEntry(entry.path, entry.sha256, newline));
   }
 
   if (nextManifest !== originalManifest) {

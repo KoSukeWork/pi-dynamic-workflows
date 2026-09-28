@@ -58,6 +58,10 @@ function publishableFiles(): Set<string> {
   return new Set(parseNpmPackFilePaths(output));
 }
 
+function packagePath(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
 test("publishable Pi package discovers the workflow-authoring skill and all linked resources", () => {
   // workflow-patterns (discoverability for the 5 built-in patterns via the
   // `workflow` tool's `name` input) is a separate, smaller skill — see
@@ -79,7 +83,7 @@ test("publishable Pi package discovers the workflow-authoring skill and all link
   for (const sourcePath of REQUIRED_RESOURCES.filter((path) => path.endsWith(".md"))) {
     const source = readFileSync(join(ROOT, sourcePath), "utf8");
     for (const match of source.matchAll(/\[[^\]]+\]\(([^)#]+)(?:#([^)]+))?\)/g)) {
-      const target = normalize(join(dirname(sourcePath), match[1]));
+      const target = packagePath(normalize(join(dirname(sourcePath), match[1])));
       assert.equal(
         relative(".", target).startsWith(".."),
         false,

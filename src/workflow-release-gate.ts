@@ -382,8 +382,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Keep npm pack paths stable across Windows and POSIX hosts. */
+function normalizePackagePath(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
 function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
+  // Keep guidance baselines and frozen-file hashes independent of checkout
+  // line-ending conversion (core.autocrlf on Windows).
+  return createHash("sha256").update(value.replace(/\r\n?/g, "\n")).digest("hex");
 }
 
 /** Render deterministic hashes for provider-visible and on-demand guidance surfaces. */
@@ -436,7 +443,7 @@ function validateGuidanceBaseline(root: string, actual?: string): WorkflowReleas
 
 function validatePackage(root: string, publishableFiles: readonly string[]): WorkflowReleaseDiagnostic[] {
   const diagnostics: WorkflowReleaseDiagnostic[] = [];
-  const files = new Set(publishableFiles);
+  const files = new Set(publishableFiles.map(normalizePackagePath));
   for (const resource of REQUIRED_WORKFLOW_PACKAGE_RESOURCES) {
     if (!files.has(resource)) {
       diagnostics.push(
@@ -449,12 +456,12 @@ function validatePackage(root: string, publishableFiles: readonly string[]): Wor
     }
   }
 
-  for (const sourcePath of publishableFiles.filter(
-    (path) => path.startsWith(`${SKILL_ROOT}/`) && path.endsWith(".md"),
-  )) {
+  for (const sourcePath of publishableFiles
+    .map(normalizePackagePath)
+    .filter((path) => path.startsWith(`${SKILL_ROOT}/`) && path.endsWith(".md"))) {
     const source = readFileSync(join(root, sourcePath), "utf8");
     for (const match of source.matchAll(/\[[^\]]+\]\(([^)#]+)(?:#([^)]+))?\)/g)) {
-      const target = normalize(join(dirname(sourcePath), match[1]));
+      const target = normalizePackagePath(normalize(join(dirname(sourcePath), match[1])));
       const anchor = match[2];
       const outsidePackage = relative(".", target).startsWith("..");
       const targetMissing = !files.has(target);
@@ -484,7 +491,9 @@ export function parseNpmPackFilePaths(output: string): string[] {
   if (!isRecord(first) || !Array.isArray(first.files)) {
     return [];
   }
-  return first.files.flatMap((file: unknown) => (isRecord(file) && typeof file.path === "string" ? [file.path] : []));
+  return first.files.flatMap((file: unknown) =>
+    isRecord(file) && typeof file.path === "string" ? [normalizePackagePath(file.path)] : [],
+  );
 }
 
 /** Return every model-free contract, package, documentation, and guidance alignment diagnostic. */

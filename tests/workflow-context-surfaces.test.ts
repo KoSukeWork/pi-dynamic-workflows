@@ -60,7 +60,10 @@ test("workflow context measurement reports Pi-rendered prompt and provider tool 
     ["write", "edit", "review", "debug", "loop", "retry"],
   );
   for (const profile of artifact.surfaces.representativeAuthoringProfiles.profiles) {
-    const expected = profile.files.reduce((sum, path) => sum + Buffer.byteLength(readFileSync(join(ROOT, path))), 0);
+    const expected = profile.files.reduce(
+      (sum, path) => sum + Buffer.byteLength(readFileSync(join(ROOT, path), "utf8").replace(/\r\n?/g, "\n")),
+      0,
+    );
     assert.equal(profile.bytes, expected, `${profile.name} profile must sum its declared files`);
   }
   const profileBytes = artifact.surfaces.representativeAuthoringProfiles.profiles

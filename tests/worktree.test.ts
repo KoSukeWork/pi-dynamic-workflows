@@ -8,6 +8,18 @@ import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { runWorkflow } from "../src/workflow.js";
 import { createWorktree as createWorktreeLive, removeWorktree } from "../src/worktree.js";
 
+/** Install a Git hook used to make a real Git operation hang in a test. */
+function writePostCheckoutHook(repo: string, source: string): void {
+  const hook = join(repo, ".git", "hooks", "post-checkout");
+  writeFileSync(hook, `#!/bin/sh\n${source}\n`);
+  if (process.platform !== "win32") execFileSync("chmod", ["+x", hook]);
+}
+
+function gitPath(path: string): string {
+  const normalized = path.replaceAll("\\", "/");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
 // ── Existing tests (unchanged) ──
 
 test("createWorktree no-ops (not isolated) outside a git repo", async () => {
@@ -364,54 +376,56 @@ test("removeWorktree does not throw when git operations fail (corrupted metadata
 });
 
 test("a hung git is bounded by the exec timeout (audit2 #21)", async () => {
-  // A fake `git` that sleeps forever: createWorktree must fail fast instead of
-  // blocking agent spawn indefinitely.
-  const shimDir = mkdtempSync(join(tmpdir(), "pi-wt-shim-"));
-  const shimPath = join(shimDir, process.platform === "win32" ? "git.cmd" : "git");
-  writeFileSync(shimPath, "#!/bin/sh\nsleep 600\n");
-  execFileSync("chmod", ["+x", shimPath]);
+  // A real post-checkout hook that sleeps forever: createWorktree must fail
+  // fast instead of blocking agent spawn indefinitely. Git for Windows runs
+  // the POSIX hook through its bundled shell, so this exercises both hosts.
   const repo = mkdtempSync(join(tmpdir(), "pi-wt-hang-"));
-  const originalPath = process.env.PATH;
-  process.env.PATH = `${shimDir}:${originalPath}`;
+  const stopHook = join(repo, "stop-hook");
+  const previousStopHook = process.env.PI_WORKTREE_HOOK_STOP;
+  process.env.PI_WORKTREE_HOOK_STOP = stopHook;
   try {
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    git("init", "-q");
+    git("config", "user.email", "t@t.t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "file.txt"), "base\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "init");
+    writePostCheckoutHook(repo, 'while [ ! -f "$PI_WORKTREE_HOOK_STOP" ]; do :; done');
+
     const started = Date.now();
     const wt = await createWorktreeLive(repo, "run-hang-0-task", { timeoutMs: 150 });
     const elapsed = Date.now() - started;
+    writeFileSync(stopHook, "stop\n");
+    await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(wt.isolated, false, "the timed-out git fails the worktree (falls back to base cwd)");
+    assert.match(wt.reason ?? "", /timed out/, "the failure must come from the bounded Git timeout");
     assert.ok(elapsed < 10_000, `bounded (took ${elapsed}ms, not the default 30s or forever)`);
   } finally {
-    process.env.PATH = originalPath;
-    rmSync(shimDir, { recursive: true, force: true });
-    rmSync(repo, { recursive: true, force: true });
+    if (previousStopHook === undefined) delete process.env.PI_WORKTREE_HOOK_STOP;
+    else process.env.PI_WORKTREE_HOOK_STOP = previousStopHook;
+    rmSync(repo, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
 test("a timed-out worktree add cleans up only its half-created branch, tree, and registration (audit2 #21 r1)", async () => {
-  // Real git repo, but a PATH shim that sleeps ONLY on `worktree add`:
-  // rev-parse/branch -D/remove delegate to the real git.
-  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
-  const shimDir = mkdtempSync(join(tmpdir(), "pi-wt-shim2-"));
-  const shimPath = join(shimDir, "git");
-  const commandLog = join(shimDir, "git-commands.log");
-  const fixtureReady = join(shimDir, "fixture-ready");
-  const fixtureRegistrations = join(shimDir, "fixture-registrations");
-  const fixtureBranches = join(shimDir, "fixture-branches");
+  // A real post-checkout hook leaves residue after the target `worktree add`,
+  // then sleeps. This avoids shell command shims, which execFile cannot run on
+  // Windows, while still testing the real Git timeout and cleanup path.
   const repo = realpathSync(mkdtempSync(join(tmpdir(), "pi-wt-add-hang-")));
   const staleWorktree = join(repo, "unrelated-missing-worktree");
-  // The shim must leave REAL residue behind (r2: a pure-sleep shim made the
-  // cleanup assertions vacuous): run the real `worktree add`, THEN hang so
-  // the timeout kills us — the branch and tree exist when cleanup runs. It also
-  // creates an unrelated missing worktree registration AFTER the target add;
-  // this proves cleanup does not use global `git worktree prune`.
-  writeFileSync(
-    shimPath,
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> "${commandLog}"\ncase "$*" in\n  *"worktree add"*)\n    "${realGit}" "$@"\n    "${realGit}" -C "$2" worktree add -b unrelated-stale "${staleWorktree}" HEAD\n    rm -rf "${staleWorktree}"\n    "${realGit}" -C "$2" worktree list --porcelain > "${fixtureRegistrations}"\n    "${realGit}" -C "$2" branch --list unrelated-stale > "${fixtureBranches}"\n    printf 'ready\\n' > "${fixtureReady}"\n    sleep 600\n    ;;\n  *) exec "${realGit}" "$@" ;;\nesac\n`,
-  );
-  execFileSync("chmod", ["+x", shimPath]);
-
+  const fixtureReady = join(repo, "fixture-ready");
+  const fixtureRegistrations = join(repo, "fixture-registrations");
+  const fixtureBranches = join(repo, "fixture-branches");
+  const stopHook = join(repo, "stop-hook");
+  const savedEnv = new Map<string, string | undefined>();
+  const setHookEnv = (name: string, value: string | undefined) => {
+    if (!savedEnv.has(name)) savedEnv.set(name, process.env[name]);
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  };
   const git = (...args: string[]) =>
-    execFileSync(realGit, ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  const originalPath = process.env.PATH;
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   try {
     git("init", "-q");
     git("config", "user.email", "t@t.t");
@@ -419,26 +433,41 @@ test("a timed-out worktree add cleans up only its half-created branch, tree, and
     writeFileSync(join(repo, "f.txt"), "base\n");
     git("add", ".");
     git("commit", "-qm", "init");
+    writePostCheckoutHook(
+      repo,
+      [
+        'if [ "$PI_WORKTREE_HOOK_ACTIVE" = "1" ]; then exit 0; fi',
+        "export PI_WORKTREE_HOOK_ACTIVE=1",
+        'git -C "$PI_WORKTREE_HOOK_REPO" worktree add -b unrelated-stale "$PI_WORKTREE_HOOK_STALE" HEAD',
+        'rm -rf "$PI_WORKTREE_HOOK_STALE"',
+        'git -C "$PI_WORKTREE_HOOK_REPO" worktree list --porcelain > "$PI_WORKTREE_HOOK_REGISTRATIONS"',
+        'git -C "$PI_WORKTREE_HOOK_REPO" branch --list unrelated-stale > "$PI_WORKTREE_HOOK_BRANCHES"',
+        'printf "ready\\n" > "$PI_WORKTREE_HOOK_READY"',
+        'while [ ! -f "$PI_WORKTREE_HOOK_STOP" ]; do :; done',
+      ].join("\n"),
+    );
+    setHookEnv("PI_WORKTREE_HOOK_ACTIVE", undefined);
+    setHookEnv("PI_WORKTREE_HOOK_REPO", repo);
+    setHookEnv("PI_WORKTREE_HOOK_STALE", staleWorktree);
+    setHookEnv("PI_WORKTREE_HOOK_REGISTRATIONS", fixtureRegistrations);
+    setHookEnv("PI_WORKTREE_HOOK_BRANCHES", fixtureBranches);
+    setHookEnv("PI_WORKTREE_HOOK_READY", fixtureReady);
+    setHookEnv("PI_WORKTREE_HOOK_STOP", stopHook);
 
-    process.env.PATH = `${shimDir}:${originalPath}`;
     const started = Date.now();
-    // 2s is comfortably above the tiny repo's real `worktree add` (r3: 200ms
-    // raced it — under load the add was killed before registering, making the
-    // cleanup assertions vacuous again).
+    // Two seconds leaves enough time for the tiny real repository to create
+    // both registrations before the hook is terminated by execFile.
     const wt = await createWorktreeLive(repo, "run-addhang-0-task", { timeoutMs: 2_000 });
     const elapsed = Date.now() - started;
-    process.env.PATH = originalPath;
+    writeFileSync(stopHook, "stop\n");
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     assert.equal(wt.isolated, false);
-    assert.match(wt.reason ?? "", /timed out/, "an honest timeout reason, not 'not a git repository'");
+    assert.match(wt.reason ?? "", /timed out/, "an honest timeout reason, not a successful add");
     assert.ok(elapsed < 15_000, `bounded (took ${elapsed}ms)`);
-    assert.equal(
-      readFileSync(fixtureReady, "utf8"),
-      "ready\n",
-      "the wrapper created its unrelated stale fixture before timeout cleanup",
-    );
+    assert.equal(readFileSync(fixtureReady, "utf8"), "ready\n", "the hook reached its sleep after fixture setup");
     assert.ok(
-      readFileSync(fixtureRegistrations, "utf8").includes(`worktree ${staleWorktree}`),
+      gitPath(readFileSync(fixtureRegistrations, "utf8")).includes(`worktree ${gitPath(staleWorktree)}`),
       "the unrelated missing registration existed before target cleanup",
     );
     assert.notEqual(
@@ -446,34 +475,21 @@ test("a timed-out worktree add cleans up only its half-created branch, tree, and
       "",
       "the unrelated stale branch existed before target cleanup",
     );
-    const commands = readFileSync(commandLog, "utf8").trim().split("\n").filter(Boolean);
-    assert.ok(
-      !commands.some((command) => command.includes("worktree prune")),
-      "cleanup never runs global worktree prune",
-    );
-    const cleanupRemovals = commands.filter((command) => command.includes("worktree remove --force"));
-    assert.equal(cleanupRemovals.length, 2, "cleanup retries removal only for its known path after rm");
-    const cleanupPaths = cleanupRemovals.map((command) => command.split(" ").at(-1));
-    assert.equal(new Set(cleanupPaths).size, 1, "both cleanup removals target the same generated worktree");
-    assert.notEqual(cleanupPaths[0], staleWorktree, "cleanup never targets the unrelated registration");
     const branches = git("branch", "--list", "pi/wf/*");
     assert.equal(branches.trim(), "", "the half-created branch was cleaned up");
     const worktreesDir = join(repo, ".pi", "worktrees");
     assert.ok(!existsSync(worktreesDir) || readdirSync(worktreesDir).length === 0, "no partial checkout left behind");
     const registrations = git("worktree", "list", "--porcelain");
-    assert.equal(
-      registrations.includes(`worktree ${cleanupPaths[0]}`),
-      false,
-      "no target worktree registration remains",
-    );
     assert.ok(
-      registrations.includes(`worktree ${staleWorktree}`),
+      gitPath(registrations).includes(`worktree ${gitPath(staleWorktree)}`),
       "unrelated missing registration survives target cleanup",
     );
     assert.notEqual(git("branch", "--list", "unrelated-stale").trim(), "", "unrelated stale branch survives too");
   } finally {
-    process.env.PATH = originalPath;
-    rmSync(shimDir, { recursive: true, force: true });
-    rmSync(repo, { recursive: true, force: true });
+    for (const [name, value] of savedEnv) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    rmSync(repo, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });

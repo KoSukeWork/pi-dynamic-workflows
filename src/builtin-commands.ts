@@ -376,7 +376,6 @@ export function registerBuiltinWorkflows(
   // from a git capture the shadow path cannot reproduce, so a code-review
   // shadow keeps the standard parsed-args behavior.
   const SHADOW_WHOLE_STRING_PRIMARY: Record<string, string> = {
-    "deep-research": "question",
     "adversarial-review": "task",
   };
   const SHADOW_TOKENIZED_PRIMARY: Record<string, { primary: string; rest: string }> = {

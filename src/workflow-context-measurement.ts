@@ -106,7 +106,7 @@ export interface WorkflowContextMeasurement {
     ordinaryWorkflowOwnedAlwaysOn: ByteSurface;
     workflowAuthoringSkillCorpus: ByteSurface & { files: number };
     representativeAuthoringProfiles: {
-      serialization: "sum of UTF-8 bytes for each profile's declared package-relative files";
+      serialization: "sum of UTF-8 bytes for each profile's declared package-relative file after LF normalization";
       medianBytes: number;
       profiles: Array<{ name: string; files: string[]; bytes: number }>;
     };
@@ -118,7 +118,10 @@ function bytes(value: string): number {
 }
 
 function fileBytes(root: string, path: string): number {
-  return bytes(readFileSync(join(root, path), "utf8"));
+  // Git may materialize text files with CRLF on Windows. Measure the
+  // normalized package text so the committed artifact is reproducible across
+  // checkout platforms.
+  return bytes(readFileSync(join(root, path), "utf8").replace(/\r\n?/g, "\n"));
 }
 
 function skillFiles(root: string): string[] {
@@ -230,12 +233,12 @@ export function measureWorkflowContextSurfaces(root: string = ROOT): WorkflowCon
         bytes: promptBytes + toolBytes + registeredSkillsDiscoveryBytes,
       },
       workflowAuthoringSkillCorpus: {
-        serialization: "sum of UTF-8 bytes for every file under skills/workflow-authoring",
+        serialization: "sum of UTF-8 bytes for every file under skills/workflow-authoring after LF normalization",
         files: corpusFiles.length,
         bytes: corpusBytes,
       },
       representativeAuthoringProfiles: {
-        serialization: "sum of UTF-8 bytes for each profile's declared package-relative files",
+        serialization: "sum of UTF-8 bytes for each profile's declared package-relative file after LF normalization",
         medianBytes: median(profiles.map(({ bytes: profileBytes }) => profileBytes)),
         profiles,
       },

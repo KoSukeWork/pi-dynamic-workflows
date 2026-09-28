@@ -229,12 +229,7 @@ test("registerBuiltinWorkflows registers the curated built-in workflow commands"
   registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
   assert.equal(commands.length, 4);
   const names = commands.map((c) => c.name).sort();
-  assert.deepEqual(names, [
-    "adversarial-review",
-    "code-review",
-    "codebase-audit",
-    "multi-perspective",
-  ]);
+  assert.deepEqual(names, ["adversarial-review", "code-review", "codebase-audit", "multi-perspective"]);
 });
 
 test("registerBuiltinWorkflows is idempotent — skips already registered commands", () => {
@@ -493,16 +488,16 @@ test("a saved shadow of a builtin receives the builtin's positional argument (au
     cwd: "/tmp",
     manager,
     storage: makeFakeStorage({
-      "deep-research": { script: "export const meta = { name: 'shadow', description: 's' }" },
+      "adversarial-review": { script: "export const meta = { name: 'shadow', description: 's' }" },
     }),
   });
-  const handler = commands.find((c) => c.name === "deep-research")?.handler;
+  const handler = commands.find((c) => c.name === "adversarial-review")?.handler;
   assert.ok(handler);
   const { ctx } = makeNotifyCtx();
   await handler("quantum computing advances", ctx);
   assert.equal(started.length, 1, "the shadow ran");
   const args = started[0].args as Record<string, unknown>;
-  assert.equal(args.question, "quantum computing advances", "bare positional maps to the builtin's question contract");
+  assert.equal(args.task, "quantum computing advances", "bare positional maps to the builtin's task contract");
 });
 
 test("a saved shadow does not override an explicitly named argument (audit2 #43)", async () => {
@@ -512,44 +507,44 @@ test("a saved shadow does not override an explicitly named argument (audit2 #43)
     cwd: "/tmp",
     manager,
     storage: makeFakeStorage({
-      "deep-research": { script: "export const meta = { name: 'shadow', description: 's' }" },
+      "adversarial-review": { script: "export const meta = { name: 'shadow', description: 's' }" },
     }),
   });
-  const handler = commands.find((c) => c.name === "deep-research")?.handler;
+  const handler = commands.find((c) => c.name === "adversarial-review")?.handler;
   assert.ok(handler);
   const { ctx } = makeNotifyCtx();
-  await handler("question=explicit-topic extra words", ctx);
+  await handler("task=explicit-topic extra words", ctx);
   const args = started[0].args as Record<string, unknown>;
-  assert.equal(args.question, "explicit-topic", "the named arg wins; positionals stay in _");
+  assert.equal(args.task, "explicit-topic", "the named arg wins; positionals stay in _");
 });
 
-test("shadow positional mapping: equals-only topics, defaults, and structured secondaries (audit2 #43 r1)", async () => {
+test("shadow positional mapping: equals-only tasks, defaults, and structured secondaries (audit2 #43 r1)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
   registerBuiltinWorkflows(pi, {
     cwd: "/tmp",
     manager,
     storage: makeFakeStorage({
-      "deep-research": {
+      "adversarial-review": {
         script: "export const meta = { name: 'shadow', description: 's' }",
-        parameters: { question: { default: "DEFAULT" } },
+        parameters: { task: { default: "DEFAULT" } },
       },
       "multi-perspective": { script: "export const meta = { name: 'mps', description: 's' }" },
     }),
   });
   const { ctx } = makeNotifyCtx();
-  const deep = commands.find((c) => c.name === "deep-research")?.handler;
+  const adversarial = commands.find((c) => c.name === "adversarial-review")?.handler;
   const mps = commands.find((c) => c.name === "multi-perspective")?.handler;
-  assert.ok(deep && mps);
+  assert.ok(adversarial && mps);
 
-  // "="-containing topic survives (parseCommandArgs treats it as key=value).
-  assert.ok(deep);
-  await deep("a=b=c", ctx);
-  assert.equal((started[0].args as Record<string, unknown>).question, "a=b=c");
+  // "="-containing task survives (parseCommandArgs treats it as key=value).
+  assert.ok(adversarial);
+  await adversarial("a=b=c", ctx);
+  assert.equal((started[0].args as Record<string, unknown>).task, "a=b=c");
 
   // A bare positional beats the declared parameter default.
-  await deep("explicit topic", ctx);
-  assert.equal((started[1].args as Record<string, unknown>).question, "explicit topic");
+  await adversarial("explicit task", ctx);
+  assert.equal((started[1].args as Record<string, unknown>).task, "explicit task");
 
   // Structured secondary: first token → topic, rest → perspectives.
   assert.ok(mps);
@@ -578,22 +573,22 @@ test("shadow tokenized mapping is quote-aware like the builtin (audit2 #43 r2)",
   assert.deepEqual(args.perspectives, ["security", "performance"]);
 });
 
-test("shadow whole-string mapping keeps equals-containing topics whole (audit2 #43 r2)", async () => {
+test("shadow whole-string mapping keeps equals-containing tasks whole (audit2 #43 r2)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
   registerBuiltinWorkflows(pi, {
     cwd: "/tmp",
     manager,
     storage: makeFakeStorage({
-      "deep-research": { script: "export const meta = { name: 'shadow', description: 's' }" },
+      "adversarial-review": { script: "export const meta = { name: 'shadow', description: 's' }" },
     }),
   });
-  const deep = commands.find((c) => c.name === "deep-research")?.handler;
-  assert.ok(deep);
+  const adversarial = commands.find((c) => c.name === "adversarial-review")?.handler;
+  assert.ok(adversarial);
   const { ctx } = makeNotifyCtx();
-  await deep("what does a=b mean", ctx);
+  await adversarial("what does a=b mean", ctx);
   assert.equal(
-    (started[0].args as Record<string, unknown>).question,
+    (started[0].args as Record<string, unknown>).task,
     "what does a=b mean",
     "the full trimmed string, exactly like the builtin",
   );
