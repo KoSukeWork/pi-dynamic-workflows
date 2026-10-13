@@ -148,7 +148,7 @@ For an always-on exhaustive mode, use `/ultracode`; `/effort high` is the lighte
 
 These same patterns are also reachable by name without a slash command. A saved workflow always wins over a built-in of the same name, on both the slash-command and natural-language paths — so saving your own `code-review` shadows the built-in one everywhere.
 
-This certified fork does not ship `/deep-research` or a built-in `web_fetch`/`web_search` toolset. Use host `pi-web-access` in the parent session if you need the web.
+This certified fork does not ship `/deep-research` or a built-in `web_fetch`/`web_search` toolset. Use Pi's native MCP web tools in the parent session if you need the web; the certification setup uses Exa for public search and page text. Workflow children do not inherit the parent's loaded extensions.
 
 ## Commands and run control
 
